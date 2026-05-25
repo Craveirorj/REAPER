@@ -1,0 +1,21 @@
+# Projectos REAPER (dados sensíveis)
+projects/
+*.json
+
+# Relatórios gerados
+reports/
+*.pdf
+*.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+venv/
+.venv/
+
+# Sistema
+.DS_Store
+Thumbs.db
+*.log
