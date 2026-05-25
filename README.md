@@ -45,7 +45,7 @@ O REAPER é uma **framework de pentest em terminal**, inspirado no estilo do Met
 |---|------|-------------|
 | 1 | 🔍 Reconhecimento | whois, dig, theHarvester, netdiscover, nslookup |
 | 2 | 📡 Scanning | nmap (básico, completo, UDP, vuln), masscan |
-| 3 | 🔎 Enumeração | gobuster, feroxbuster, nikto, wpscan, enum4linux, smbclient, dirb |
+| 3 | 🔎 Enumeração | gobuster, feroxbuster, ffuf, nikto, wpscan, enum4linux, smbclient, dirb |
 | 4 | 🐛 Análise de Vulnerabilidades | searchsploit, nuclei, vulners, msfconsole |
 | 5 | 💥 Exploração | hydra, john, hashcat, sqlmap, msfvenom |
 | 6 | 🏠 Pós-Exploração | linpeas, sudo -l, SUID, crontab, capabilities, PATH hijacking |
@@ -163,8 +163,8 @@ As restantes ferramentas (nmap, hydra, gobuster, etc.) já estão incluídas no 
 **Craveiro**
 Formação em Cibersegurança — Pentest, Network Security, CTF
 
-[![LinkedIn](https://img.shields.io/badge/LinkedIn-blue?style=flat-square&logo=linkedin)](https://www.linkedin.com/in/ricardo-craveiro-751512150/)
-[![GitHub](https://img.shields.io/badge/GitHub-black?style=flat-square&logo=github)](https://github.com/Craveirorj)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-blue?style=flat-square&logo=linkedin)](https://linkedin.com/in/SEU_PERFIL)
+[![GitHub](https://img.shields.io/badge/GitHub-black?style=flat-square&logo=github)](https://github.com/SEU_USERNAME)
 
 ---
 
