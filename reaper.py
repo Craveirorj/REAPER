@@ -180,33 +180,6 @@ TOOL_DEFINITIONS = {
             "cmd": "feroxbuster -u {url} -w {wordlist} -x {ext} -d {depth} -o {output}",
         },
         {
-            "name": "ffuf",
-            "desc": "Fuzzing rápido de directorias, parâmetros e vhosts",
-            "hints": [
-                "💡 FFUF é o fuzzer mais rápido — ideal para CTFs e labs",
-                "💡 Usa FUZZ como placeholder na URL onde queres fazer fuzzing",
-                "💡 Exemplo directorias: http://alvo/FUZZ",
-                "💡 Exemplo parâmetros: http://alvo/page.php?id=FUZZ",
-                "💡 Exemplo vhosts: usa -H 'Host: FUZZ.dominio.com' com -w subdomains.txt",
-                "💡 -fc 404 filtra respostas 404 (não encontrado)",
-                "💡 -fc 403,404 filtra múltiplos códigos",
-                "💡 -mc 200 mostra só respostas 200 (OK)",
-                "💡 -t 50 define 50 threads (mais rápido, mais ruído)",
-                "💡 Wordlists recomendadas:",
-                "     /usr/share/wordlists/dirb/common.txt  (rápida)",
-                "     /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt (completa)",
-            ],
-            "params": [
-                {"key": "url",      "label": "URL com FUZZ (ex: http://192.168.1.1/FUZZ)", "default": "http://{TARGET}/FUZZ"},
-                {"key": "wordlist", "label": "Wordlist",                                    "default": "/usr/share/wordlists/dirb/common.txt"},
-                {"key": "ext",      "label": "Extensões (ex: php,html,txt — ENTER para saltar)", "default": ""},
-                {"key": "fc",       "label": "Filtrar códigos HTTP (ex: 404 ou 403,404)",   "default": "404"},
-                {"key": "threads",  "label": "Threads (velocidade)",                         "default": "40"},
-                {"key": "output",   "label": "Ficheiro output",                              "default": "ffuf_{TARGET}.txt"},
-            ],
-            "cmd": "ffuf -u {url} -w {wordlist} -e {ext} -fc {fc} -t {threads} -o {output}",
-        },
-        {
             "name": "dirb",
             "desc": "Enumeração de directorias web",
             "params": [
@@ -859,9 +832,12 @@ def run_tool(ph, color, tool):
         console.print(f"[{color}]Parâmetros necessários:[/{color}] [dim](ENTER para aceitar valor sugerido)[/dim]\n")
         for p in params:
             d = p["default"]
-            # Mostra o valor sugerido apenas uma vez, integrado no label
-            if d:
-                label_str = f"  [{color}]{p['label']}[/{color}] [bold white]{d}[/bold white]"
+            # Se o default é diferente do label, mostra-o; caso contrário só o label
+            label_clean = p['label'].lower().replace(" ", "")
+            d_clean = d.lower().replace(" ", "")
+            show_default = d and d_clean not in label_clean and label_clean not in d_clean
+            if show_default:
+                label_str = f"  [{color}]{p['label']}[/{color}] [dim]({d})[/dim]"
             else:
                 label_str = f"  [{color}]{p['label']}[/{color}]"
             val = Prompt.ask(label_str, default=d)
@@ -1341,22 +1317,6 @@ ATTACK_TREE = {
                     "fail":    ["web_sqli"]
                 },
                 "hints": "Mais lento mas encontra mais — usa após gobuster falhar"
-            },
-            {
-                "name": "FFUF — fuzzing rápido",
-                "desc": "Fuzzer ultra-rápido — directorias, parâmetros ou vhosts",
-                "params": [
-                    {"key": "url",      "label": "URL com FUZZ (ex: http://alvo/FUZZ)", "default": "http://{TARGET}/FUZZ"},
-                    {"key": "wordlist", "label": "Wordlist",                             "default": "/usr/share/wordlists/dirb/common.txt"},
-                    {"key": "fc",       "label": "Filtrar códigos (ex: 404)",            "default": "404"},
-                    {"key": "threads",  "label": "Threads",                              "default": "40"},
-                ],
-                "cmd": "ffuf -u {url} -w {wordlist} -fc {fc} -t {threads}",
-                "followup": {
-                    "success": ["web_analyse_dirs"],
-                    "fail":    ["web_sqli"]
-                },
-                "hints": "💡 Coloca FUZZ onde queres fazer fuzzing:\n   Directorias → http://alvo/FUZZ\n   Parâmetros  → http://alvo/page.php?id=FUZZ\n   Vhosts      → usa -H 'Host: FUZZ.dominio.com'\n   -fc 404 filtra not found  |  -mc 200 mostra só OK\n   Muito mais rápido que gobuster/feroxbuster"
             },
             {
                 "name": "WPScan — WordPress",
@@ -2010,11 +1970,16 @@ def _run_attack(attack, target, color, project, save_fn):
         p["default"] = p["default"].replace("{TARGET}", target)
 
     if params:
-        console.print(f"[{color}]Parâmetros:[/{color}] [dim](ENTER para aceitar valor sugerido)[/dim]\n")
+        console.print(f"[{color}]Parâmetros:[/{color}] [dim](ENTER para aceitar)[/dim]\n")
         for p in params:
             d = p["default"]
-            label_str = f"  [{color}]{p['label']}[/{color}] [bold white]{d}[/bold white]" if d \
-                        else f"  [{color}]{p['label']}[/{color}]"
+            label_clean = p['label'].lower().replace(" ", "")
+            d_clean = d.lower().replace(" ", "") if d else ""
+            show_default = d and d_clean not in label_clean and label_clean not in d_clean
+            if show_default:
+                label_str = f"  [{color}]{p['label']}[/{color}] [dim]({d})[/dim]"
+            else:
+                label_str = f"  [{color}]{p['label']}[/{color}]"
             val = Prompt.ask(label_str, default=d)
             values[p["key"]] = val
     else:
