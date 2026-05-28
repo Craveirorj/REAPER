@@ -972,6 +972,27 @@ def run_tool(ph, color, tool):
         save_project()
         console.print(f"\n[green]✔ Comando guardado nas notas da fase {ph['id']}.[/green]")
 
+    # ── Marcar estado da ferramenta ──────────────────────────
+    if ch in ["1", "3"]:
+        console.print()
+        res = Prompt.ask(
+            f"[{color}]Como correu?[/{color}]\n"
+            "  [1] Concluído com sucesso\n"
+            "  [2] Falhou / sem resultados úteis\n"
+            "  [3] Parcial / interrompido\n"
+            "  [B] Não marcar\n\nEscolha"
+        ).strip().upper()
+        ts_now = datetime.datetime.now().strftime("%d/%m %H:%M")
+        if res == "1":
+            _set_tool_status(ph["id"], tool["name"], "done", cmd, ts_now)
+            console.print(f"[green]✔ Marcado como Feito.[/green]")
+        elif res == "2":
+            _set_tool_status(ph["id"], tool["name"], "failed", cmd, ts_now)
+            console.print(f"[red]✘ Marcado como Falhou.[/red]")
+        elif res == "3":
+            _set_tool_status(ph["id"], tool["name"], "partial", cmd, ts_now)
+            console.print(f"[yellow]→ Marcado como Parcial.[/yellow]")
+
     pause()
 
 # ── Preencher dados ──────────────────────────────────────────
